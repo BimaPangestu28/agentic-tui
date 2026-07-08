@@ -17,7 +17,7 @@ pub enum Phase {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum EpicStatus {
-    // Used by the kanban board seeding added in a later task.
+    // Seeded when the plan is ready; shown in the kanban Todo column.
     Pending,
     Running,
     Verifying,
@@ -27,7 +27,7 @@ pub enum EpicStatus {
     Conflict,
 }
 
-// Used by the kanban board renderer added in a later task.
+// The kanban board column an epic belongs to.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum KanbanColumn {
     Todo,
