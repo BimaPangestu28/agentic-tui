@@ -185,12 +185,11 @@ async fn run_epic(
             prompt: &prompt,
         };
         let outcome = engine::run_stage(&spec, tx).await?;
-        let running_total = {
+        {
             let mut total = spent.lock().await;
             *total += outcome.cost;
-            *total
-        };
-        let _ = tx.send(AppEvent::Cost(running_total));
+            let _ = tx.send(AppEvent::Cost(*total));
+        }
         let _ = tx.send(AppEvent::EpicVerifying { id: epic.id.clone() });
         if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
             let _ = tx.send(AppEvent::EpicSucceeded {
