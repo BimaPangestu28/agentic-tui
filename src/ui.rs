@@ -43,6 +43,22 @@ pub fn render_picker(f: &mut Frame, workspaces: &[Workspace], selected: usize) {
     f.render_widget(list, area);
 }
 
+/// Goal input screen shown when no goal was given on the command line.
+pub fn render_goal_input(f: &mut Frame, workspace: &str, buffer: &str) {
+    let area = f.area();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+    let title = format!(" Goal for {workspace} (Enter to run, Esc to cancel) ");
+    let input = Paragraph::new(Line::from(vec![
+        Span::raw(buffer.to_string()),
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+    ]))
+    .block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(input, rows[0]);
+}
+
 pub fn render(f: &mut Frame, app: &App) {
     let area = f.area();
     let chunks = Layout::default()

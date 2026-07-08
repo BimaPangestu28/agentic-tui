@@ -59,15 +59,11 @@ fn parse_args() -> Option<Args> {
         i += 1;
     }
     let goal = goal_parts.join(" ").trim().to_string();
-    if goal.is_empty() {
-        None
-    } else {
-        Some(Args {
-            goal,
-            workspace,
-            verify,
-        })
-    }
+    Some(Args {
+        goal,
+        workspace,
+        verify,
+    })
 }
 
 /// Resolve the chosen workspace: match `--workspace` by name or path, otherwise
@@ -118,13 +114,43 @@ fn run_picker(workspaces: &[Workspace]) -> anyhow::Result<Option<Workspace>> {
     Ok(chosen)
 }
 
+/// Blocking goal input screen on its own alternate screen. Returns None on cancel.
+fn run_goal_input(workspace: &str) -> anyhow::Result<Option<String>> {
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(out);
+    let mut terminal = Terminal::new(backend)?;
+    let mut buffer = String::new();
+    let result = loop {
+        terminal.draw(|f| ui::render_goal_input(f, workspace, &buffer))?;
+        if let Event::Key(key) = crossterm::event::read()? {
+            match key.code {
+                KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => break None,
+                KeyCode::Esc => break None,
+                KeyCode::Enter if !buffer.trim().is_empty() => {
+                    break Some(buffer.trim().to_string());
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c) => buffer.push(c),
+                _ => {}
+            }
+        }
+    };
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    Ok(result)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = match parse_args() {
         Some(a) => a,
         None => {
             eprintln!(
-                "usage: agentic-tui \"<goal>\" [--workspace <name|path>] [--verify \"<cmd>\"]"
+                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"]"
             );
             std::process::exit(1);
         }
@@ -149,8 +175,20 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
 
+    let goal = if args.goal.is_empty() {
+        match run_goal_input(&selected.name)? {
+            Some(entered) => entered,
+            None => {
+                println!("no goal entered");
+                return Ok(());
+            }
+        }
+    } else {
+        args.goal.clone()
+    };
+
     let mut app = App::new(
-        args.goal.clone(),
+        goal.clone(),
         selected.name.clone(),
         config::GLOBAL_BUDGET_USD,
     );
@@ -183,7 +221,7 @@ async fn main() -> anyhow::Result<()> {
 
     let pipeline_tx = tx.clone();
     let repo_run = repo.clone();
-    let goal_run = args.goal.clone();
+    let goal_run = goal.clone();
     let verify_run = verify_cmd.clone();
     tokio::spawn(async move {
         if let Err(e) = run_pipeline(&repo_run, &goal_run, &verify_run, &pipeline_tx).await {
