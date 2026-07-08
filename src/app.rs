@@ -18,7 +18,6 @@ pub enum Phase {
 #[derive(Clone, Copy, PartialEq)]
 pub enum EpicStatus {
     // Used by the kanban board seeding added in a later task.
-    #[allow(dead_code)]
     Pending,
     Running,
     Verifying,
@@ -29,7 +28,6 @@ pub enum EpicStatus {
 }
 
 // Used by the kanban board renderer added in a later task.
-#[allow(dead_code)]
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum KanbanColumn {
     Todo,
@@ -40,7 +38,6 @@ pub enum KanbanColumn {
 }
 
 /// Map an epic status to its kanban column.
-#[allow(dead_code)]
 pub fn kanban_column(status: EpicStatus) -> KanbanColumn {
     match status {
         EpicStatus::Pending => KanbanColumn::Todo,
@@ -52,7 +49,6 @@ pub fn kanban_column(status: EpicStatus) -> KanbanColumn {
 }
 
 /// True when any dependency has not yet merged, so a pending epic is on hold.
-#[allow(dead_code)]
 pub fn is_on_hold(depends_on: &[String], status_by_id: &HashMap<String, EpicStatus>) -> bool {
     depends_on
         .iter()
@@ -65,7 +61,6 @@ pub struct EpicView {
     pub title: String,
     pub status: EpicStatus,
     pub cost: f64,
-    #[allow(dead_code)]
     pub depends_on: Vec<String>,
 }
 

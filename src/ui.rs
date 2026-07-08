@@ -9,7 +9,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, EpicStatus, EpicView, Phase};
+use crate::app::{is_on_hold, kanban_column, App, EpicStatus, EpicView, KanbanColumn, Phase};
 use crate::workspace::Workspace;
 
 const SPINNER: [&str; 4] = ["|", "/", "-", "\\"];
@@ -48,15 +48,15 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4),
-            Constraint::Length(app.epics.len().min(8) as u16 + 2),
-            Constraint::Min(1),
-            Constraint::Length(1),
+            Constraint::Length(4),  // header
+            Constraint::Min(8),     // board
+            Constraint::Length(10), // log
+            Constraint::Length(1),  // footer
         ])
         .split(area);
 
     render_header(f, app, chunks[0]);
-    render_epics(f, app, chunks[1]);
+    render_board(f, app, chunks[1]);
     render_log(f, app, chunks[2]);
     render_footer(f, app, chunks[3]);
 }
@@ -104,32 +104,90 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(gauge, cols[1]);
 }
 
-fn status_glyph(status: EpicStatus) -> (&'static str, Color) {
-    match status {
-        EpicStatus::Pending => ("pending  ", Color::DarkGray),
-        EpicStatus::Running => ("running  ", Color::Yellow),
-        EpicStatus::Verifying => ("verifying", Color::Yellow),
-        EpicStatus::Merged => ("merged   ", Color::Green),
-        EpicStatus::Failed => ("failed   ", Color::Red),
-        EpicStatus::Skipped => ("skipped  ", Color::DarkGray),
-        EpicStatus::Conflict => ("conflict ", Color::Magenta),
+fn render_board(f: &mut Frame, app: &App, area: Rect) {
+    use std::collections::HashMap;
+
+    let status_by_id: HashMap<String, EpicStatus> = app
+        .epics
+        .iter()
+        .map(|epic| (epic.id.clone(), epic.status))
+        .collect();
+
+    let columns = [
+        (KanbanColumn::Todo, " Todo "),
+        (KanbanColumn::InProgress, " In Progress "),
+        (KanbanColumn::Review, " Review "),
+        (KanbanColumn::Done, " Done "),
+        (KanbanColumn::Blocked, " Blocked "),
+    ];
+
+    let cols = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(20); 5])
+        .split(area);
+
+    let card_width = cols[0].width.saturating_sub(2) as usize;
+    let rows = area.height.saturating_sub(2) as usize;
+
+    for (index, (column, title)) in columns.iter().enumerate() {
+        let cards: Vec<&EpicView> = app
+            .epics
+            .iter()
+            .filter(|epic| kanban_column(epic.status) == *column)
+            .collect();
+
+        // Reserve one row for the overflow line when needed.
+        let visible = if cards.len() > rows {
+            rows.saturating_sub(1)
+        } else {
+            cards.len()
+        };
+
+        let mut items: Vec<ListItem> = Vec::new();
+        for epic in cards.iter().take(visible) {
+            let (marker, color) = card_marker(epic, *column, &status_by_id);
+            let text = truncate(&format!("{marker} {}", epic.id), card_width);
+            items.push(ListItem::new(Line::from(Span::styled(
+                text,
+                Style::default().fg(color),
+            ))));
+        }
+        if cards.len() > visible {
+            items.push(ListItem::new(Line::from(Span::styled(
+                format!("+{} more", cards.len() - visible),
+                Style::default().fg(Color::DarkGray),
+            ))));
+        }
+
+        let list = List::new(items).block(Block::default().borders(Borders::ALL).title(*title));
+        f.render_widget(list, cols[index]);
     }
 }
 
-fn render_epics(f: &mut Frame, app: &App, area: Rect) {
-    let items: Vec<ListItem> = app
-        .epics
-        .iter()
-        .map(|epic: &EpicView| {
-            let (label, color) = status_glyph(epic.status);
-            ListItem::new(Line::from(vec![
-                Span::styled(format!(" {label} "), Style::default().fg(color)),
-                Span::raw(format!("{}  {}", epic.id, truncate(&epic.title, 60))),
-            ]))
-        })
-        .collect();
-    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" Epics "));
-    f.render_widget(list, area);
+/// The short marker and color for an epic card, by column.
+fn card_marker(
+    epic: &EpicView,
+    column: KanbanColumn,
+    status_by_id: &std::collections::HashMap<String, EpicStatus>,
+) -> (&'static str, Color) {
+    match column {
+        KanbanColumn::Todo => {
+            if is_on_hold(&epic.depends_on, status_by_id) {
+                ("hold", Color::DarkGray)
+            } else {
+                ("redy", Color::Cyan)
+            }
+        }
+        KanbanColumn::InProgress => ("run ", Color::Yellow),
+        KanbanColumn::Review => ("chk ", Color::Yellow),
+        KanbanColumn::Done => ("ok  ", Color::Green),
+        KanbanColumn::Blocked => match epic.status {
+            EpicStatus::Failed => ("x   ", Color::Red),
+            EpicStatus::Skipped => ("skip", Color::DarkGray),
+            EpicStatus::Conflict => ("!   ", Color::Magenta),
+            _ => ("    ", Color::Gray),
+        },
+    }
 }
 
 fn render_log(f: &mut Frame, app: &App, area: Rect) {
