@@ -38,7 +38,7 @@ pub fn render_picker(f: &mut Frame, workspaces: &[Workspace], selected: usize) {
     let list = List::new(items).block(
         Block::default()
             .borders(Borders::ALL)
-            .title(" Select workspace (up/down, Enter, q to quit) "),
+            .title(" Select workspace (up/down, Enter, a to add, q to quit) "),
     );
     f.render_widget(list, area);
 }
@@ -57,6 +57,96 @@ pub fn render_goal_input(f: &mut Frame, workspace: &str, buffer: &str) {
     ]))
     .block(Block::default().borders(Borders::ALL).title(title));
     f.render_widget(input, rows[0]);
+}
+
+/// Onboarding screen one: an editable path to scan for git repositories.
+pub fn render_scan_root_input(f: &mut Frame, root: &str) {
+    let area = f.area();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+    let input = Paragraph::new(Line::from(vec![
+        Span::raw(root.to_string()),
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Scan which folder for git repos? (Enter to scan, Esc to quit) "),
+    );
+    f.render_widget(input, rows[0]);
+    let help = Paragraph::new(
+        "No workspaces configured yet. Point at a folder and I will find the git repositories inside it.",
+    )
+    .wrap(Wrap { trim: true })
+    .block(Block::default().borders(Borders::ALL).title(" Onboarding "));
+    f.render_widget(help, rows[1]);
+}
+
+/// Onboarding screen two: a brief status while the scan runs.
+pub fn render_scanning(f: &mut Frame, root: &str) {
+    let area = f.area();
+    let message = Paragraph::new(format!("Scanning {root} for git repositories..."))
+        .block(Block::default().borders(Borders::ALL).title(" Onboarding "));
+    f.render_widget(message, area);
+}
+
+/// Onboarding screen three: a checklist of found repositories.
+pub fn render_repo_checklist(
+    f: &mut Frame,
+    repos: &[Workspace],
+    selected: usize,
+    checked: &[bool],
+    root: &str,
+) {
+    let area = f.area();
+    if repos.is_empty() {
+        let message = Paragraph::new(format!(
+            "No git repositories found under {root}.\nPress r to scan a different folder, or Esc to quit."
+        ))
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" No repositories found "),
+        );
+        f.render_widget(message, area);
+        return;
+    }
+    let items: Vec<ListItem> = repos
+        .iter()
+        .enumerate()
+        .map(|(index, workspace)| {
+            let mark = if checked.get(index).copied().unwrap_or(false) {
+                "[x]"
+            } else {
+                "[ ]"
+            };
+            let cursor = if index == selected { ">" } else { " " };
+            let style = if index == selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            ListItem::new(Line::from(vec![Span::styled(
+                format!(
+                    "{cursor} {mark} {}  {}",
+                    workspace.name,
+                    workspace.path.display()
+                ),
+                style,
+            )]))
+        })
+        .collect();
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Pick workspaces (up/down, Space toggle, Enter save, r rescan, Esc quit) "),
+    );
+    f.render_widget(list, area);
 }
 
 pub fn render(f: &mut Frame, app: &App) {

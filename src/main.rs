@@ -69,8 +69,18 @@ fn parse_args() -> Option<Args> {
     })
 }
 
-/// Resolve the chosen workspace: match `--workspace` by name or path, otherwise
-/// show the picker. Returns None if the user quits the picker.
+/// What the workspace picker returned: a chosen workspace, a request to add more
+/// via the onboarding wizard, or a quit.
+enum PickerOutcome {
+    Chosen(Workspace),
+    Add,
+    Quit,
+}
+
+/// Resolve the chosen workspace. `--workspace` matches by name or path. With no
+/// flag and an empty config, the onboarding wizard runs first; otherwise the
+/// picker shows. The picker's `a` key re-enters the wizard and refreshes the
+/// list. Returns None if the user quits.
 fn resolve_workspace(args: &Args, workspaces: &[Workspace]) -> anyhow::Result<Option<Workspace>> {
     if let Some(wanted) = &args.workspace {
         if let Some(found) = workspaces.iter().find(|w| &w.name == wanted) {
@@ -83,38 +93,144 @@ fn resolve_workspace(args: &Args, workspaces: &[Workspace]) -> anyhow::Result<Op
             .unwrap_or_else(|| "workspace".to_string());
         return Ok(Some(Workspace { name, path }));
     }
-    run_picker(workspaces)
+
+    let config = workspace::default_config_path();
+    let mut list: Vec<Workspace> = if workspaces.is_empty() {
+        match run_onboarding(&config)? {
+            Some(all) => all,
+            None => return Ok(None),
+        }
+    } else {
+        workspaces.to_vec()
+    };
+
+    loop {
+        match run_picker(&list)? {
+            PickerOutcome::Chosen(workspace) => return Ok(Some(workspace)),
+            PickerOutcome::Quit => return Ok(None),
+            PickerOutcome::Add => {
+                if let Some(all) = run_onboarding(&config)? {
+                    list = all;
+                }
+            }
+        }
+    }
 }
 
 /// Blocking picker loop on its own alternate screen.
-fn run_picker(workspaces: &[Workspace]) -> anyhow::Result<Option<Workspace>> {
-    if workspaces.is_empty() {
-        anyhow::bail!(
-            "no workspaces configured. Add entries to {} or pass --workspace <path>",
-            workspace::default_config_path().display()
-        );
-    }
+fn run_picker(workspaces: &[Workspace]) -> anyhow::Result<PickerOutcome> {
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
     let mut selected = 0usize;
-    let chosen = loop {
+    let outcome = loop {
         terminal.draw(|f| ui::render_picker(f, workspaces, selected))?;
         if let Event::Key(key) = crossterm::event::read()? {
             match key.code {
                 KeyCode::Up => selected = selected.saturating_sub(1),
                 KeyCode::Down if selected + 1 < workspaces.len() => selected += 1,
-                KeyCode::Enter => break Some(workspaces[selected].clone()),
-                KeyCode::Char('q') => break None,
+                KeyCode::Enter => break PickerOutcome::Chosen(workspaces[selected].clone()),
+                KeyCode::Char('a') => break PickerOutcome::Add,
+                KeyCode::Char('q') => break PickerOutcome::Quit,
                 _ => {}
             }
         }
     };
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    Ok(chosen)
+    Ok(outcome)
+}
+
+/// Blocking onboarding wizard on its own alternate screen. Scans a folder for
+/// git repositories, lets the user pick some, saves them, and returns the full
+/// saved workspace list. Returns None if the user cancels.
+fn run_onboarding(config_path: &std::path::Path) -> anyhow::Result<Option<Vec<Workspace>>> {
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(out);
+    let mut terminal = Terminal::new(backend)?;
+
+    enum Screen {
+        Root,
+        List,
+    }
+    let mut screen = Screen::Root;
+    let mut root = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    let mut repos: Vec<Workspace> = Vec::new();
+    let mut checked: Vec<bool> = Vec::new();
+    let mut selected = 0usize;
+
+    let result: Option<Vec<Workspace>> = loop {
+        match screen {
+            Screen::Root => {
+                terminal.draw(|f| ui::render_scan_root_input(f, &root))?;
+                if let Event::Key(key) = crossterm::event::read()? {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break None,
+                        (KeyCode::Esc, _) => break None,
+                        (KeyCode::Enter, _) => {
+                            let dir = workspace::expand_tilde(root.trim());
+                            terminal.draw(|f| ui::render_scanning(f, &root))?;
+                            repos = workspace::scan_for_repos(&dir, workspace::DEFAULT_SCAN_DEPTH);
+                            checked = vec![false; repos.len()];
+                            selected = 0;
+                            screen = Screen::List;
+                        }
+                        (KeyCode::Backspace, _) => {
+                            root.pop();
+                        }
+                        (KeyCode::Char(c), _) => root.push(c),
+                        _ => {}
+                    }
+                }
+            }
+            Screen::List => {
+                terminal
+                    .draw(|f| ui::render_repo_checklist(f, &repos, selected, &checked, &root))?;
+                if let Event::Key(key) = crossterm::event::read()? {
+                    match (key.code, key.modifiers) {
+                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break None,
+                        (KeyCode::Esc, _) => break None,
+                        (KeyCode::Char('r'), _) => screen = Screen::Root,
+                        (KeyCode::Up, _) => selected = selected.saturating_sub(1),
+                        (KeyCode::Down, _) if selected + 1 < repos.len() => selected += 1,
+                        (KeyCode::Char(' '), _) if !repos.is_empty() => {
+                            checked[selected] = !checked[selected];
+                        }
+                        (KeyCode::Enter, _) => {
+                            let picked: Vec<Workspace> = repos
+                                .iter()
+                                .zip(checked.iter())
+                                .filter(|(_, &is_checked)| is_checked)
+                                .map(|(workspace, _)| workspace.clone())
+                                .collect();
+                            if picked.is_empty() {
+                                continue;
+                            }
+                            match workspace::save_workspaces(config_path, &picked) {
+                                Ok(()) => {
+                                    let all =
+                                        workspace::load_workspaces(config_path).unwrap_or(picked);
+                                    break Some(all);
+                                }
+                                // Persist failed (for example a read-only disk):
+                                // still proceed with the picks for this session.
+                                Err(_) => break Some(picked),
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+            }
+        }
+    };
+
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    Ok(result)
 }
 
 /// Blocking goal input screen on its own alternate screen. Returns None on cancel.

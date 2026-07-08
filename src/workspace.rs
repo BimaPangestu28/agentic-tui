@@ -25,13 +25,11 @@ struct RawWorkspace {
 }
 
 #[derive(Serialize)]
-#[allow(dead_code)]
 struct WorkspacesOut {
     workspace: Vec<RawWorkspaceOut>,
 }
 
 #[derive(Serialize)]
-#[allow(dead_code)]
 struct RawWorkspaceOut {
     name: String,
     path: String,
@@ -81,7 +79,6 @@ pub fn load_workspaces(config_path: &Path) -> anyhow::Result<Vec<Workspace>> {
 /// Persist `workspaces` to `config_path`, merging with any entries already
 /// saved there. Entries are unioned by path and the existing name wins on a
 /// path conflict. The parent directory is created if it does not exist.
-#[allow(dead_code)]
 pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::Result<()> {
     let mut merged: Vec<Workspace> = load_workspaces(config_path).unwrap_or_default();
     let mut seen: HashSet<PathBuf> = merged.iter().map(|w| w.path.clone()).collect();
@@ -127,12 +124,10 @@ pub fn validate(workspace: &Workspace) -> anyhow::Result<()> {
 }
 
 /// Maximum directory depth `scan_for_repos` descends from its root.
-#[allow(dead_code)]
 pub const DEFAULT_SCAN_DEPTH: usize = 6;
 
 /// Upper bound on how many repositories a single scan returns, so a huge tree
 /// cannot hang the wizard.
-#[allow(dead_code)]
 pub const MAX_SCAN_RESULTS: usize = 500;
 
 /// Recursively scan `root` for git repositories, descending at most `max_depth`
@@ -141,7 +136,6 @@ pub const MAX_SCAN_RESULTS: usize = 500;
 /// heavy build directories are pruned. Unreadable directories are skipped
 /// silently. Results are sorted by path, capped at `MAX_SCAN_RESULTS`, and named
 /// by their directory, disambiguated by parent directory on a name collision.
-#[allow(dead_code)]
 pub fn scan_for_repos(root: &Path, max_depth: usize) -> Vec<Workspace> {
     const PRUNE: [&str; 4] = ["node_modules", "target", "dist", "build"];
     let mut repos: Vec<PathBuf> = Vec::new();
@@ -180,7 +174,6 @@ pub fn scan_for_repos(root: &Path, max_depth: usize) -> Vec<Workspace> {
 }
 
 /// The final path component as a display name, falling back to the whole path.
-#[allow(dead_code)]
 fn base_name(path: &Path) -> String {
     path.file_name()
         .map(|name| name.to_string_lossy().to_string())
@@ -189,7 +182,6 @@ fn base_name(path: &Path) -> String {
 
 /// Turn repo paths into workspaces, disambiguating any names shared by more than
 /// one repo with a `parent/name` label.
-#[allow(dead_code)]
 fn workspaces_from_paths(paths: Vec<PathBuf>) -> Vec<Workspace> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for path in &paths {
