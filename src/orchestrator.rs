@@ -4,8 +4,18 @@
 //! driver that actually spawns sessions is added in a later task.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
+use std::sync::Arc;
 
-use crate::plan::Plan;
+use tokio::process::Command;
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::Mutex;
+
+use crate::config;
+use crate::engine::{self, StageSpec};
+use crate::event::AppEvent;
+use crate::plan::{Epic, Plan};
+use crate::worktree::{self, MergeResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpicState {
@@ -130,6 +140,183 @@ impl Scheduler {
             }
         }
     }
+}
+
+pub struct RunConfig {
+    pub repo: PathBuf,
+    pub goal: String,
+    pub verify_cmd: String,
+    pub integration_branch: String,
+}
+
+/// Run `verify_cmd` inside a worktree. Returns true on exit code 0.
+async fn run_verify(worktree_path: &std::path::Path, verify_cmd: &str) -> bool {
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(verify_cmd)
+        .current_dir(worktree_path)
+        .status()
+        .await;
+    matches!(status, Ok(s) if s.success())
+}
+
+/// Run one epic: create worktree, run the session, then verify. On failure,
+/// retry once. Returns Ok(Some(worktree)) if it passed (ready to merge),
+/// Ok(None) if it failed after retry.
+async fn run_epic(
+    epic: &Epic,
+    config: &RunConfig,
+    tx: &UnboundedSender<AppEvent>,
+) -> anyhow::Result<Option<worktree::EpicWorktree>> {
+    for attempt in 0..2 {
+        let wt = worktree::create(&config.repo, &epic.id).await?;
+        let prompt = crate::config::epic_prompt(&config.goal, epic, &config.verify_cmd);
+        let spec = StageSpec {
+            tag: &epic.id,
+            cwd: &wt.path,
+            model: crate::config::MODEL_EPIC,
+            tools: crate::config::EPIC_TOOLS,
+            max_turns: crate::config::EPIC_MAX_TURNS,
+            budget_usd: crate::config::EPIC_BUDGET_USD,
+            prompt: &prompt,
+        };
+        let outcome = engine::run_stage(&spec, tx).await?;
+        let _ = tx.send(AppEvent::Cost(outcome.cost));
+        let _ = tx.send(AppEvent::EpicVerifying { id: epic.id.clone() });
+        if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
+            let _ = tx.send(AppEvent::EpicSucceeded {
+                id: epic.id.clone(),
+                cost: outcome.cost,
+            });
+            return Ok(Some(wt));
+        }
+        let _ = worktree::remove(&config.repo, &wt).await;
+        if attempt == 0 {
+            let _ = tx.send(AppEvent::StageLog {
+                tag: epic.id.clone(),
+                line: "verify failed, retrying once".to_string(),
+            });
+        }
+    }
+    Ok(None)
+}
+
+/// Drive the whole Implement + Integrate flow. Schedules epics respecting
+/// dependencies and the parallel cap, verifies each, and merges passing epics
+/// into the integration branch in the order they finish.
+pub async fn run(
+    plan: &Plan,
+    config: RunConfig,
+    tx: UnboundedSender<AppEvent>,
+) -> anyhow::Result<()> {
+    let epics_by_id: HashMap<String, Epic> = plan
+        .epics
+        .iter()
+        .map(|e| (e.id.clone(), e.clone()))
+        .collect();
+    let scheduler = Arc::new(Mutex::new(Scheduler::new(plan, config::MAX_PARALLEL_EPICS)));
+    let config = Arc::new(config);
+    let merge_lock = Arc::new(Mutex::new(()));
+    let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
+
+    loop {
+        let ready = {
+            let sched = scheduler.lock().await;
+            if sched.is_done() {
+                break;
+            }
+            sched.next_ready()
+        };
+
+        if ready.is_empty() {
+            if let Some(handle) = handles.pop() {
+                let _ = handle.await;
+            } else {
+                break;
+            }
+            continue;
+        }
+
+        for id in ready {
+            {
+                let mut sched = scheduler.lock().await;
+                sched.mark_running(&id);
+            }
+            let epic = epics_by_id[&id].clone();
+            let _ = tx.send(AppEvent::EpicStarted {
+                id: epic.id.clone(),
+                title: epic.title.clone(),
+            });
+            let scheduler = scheduler.clone();
+            let config = config.clone();
+            let tx = tx.clone();
+            let merge_lock = merge_lock.clone();
+            handles.push(tokio::spawn(async move {
+                match run_epic(&epic, &config, &tx).await {
+                    Ok(Some(wt)) => {
+                        let merged = {
+                            let _guard = merge_lock.lock().await;
+                            worktree::merge_into(
+                                &config.repo,
+                                &wt.branch,
+                                &config.integration_branch,
+                            )
+                            .await
+                        };
+                        match merged {
+                            Ok(MergeResult::Merged) => {
+                                let _ = tx.send(AppEvent::EpicMerged { id: epic.id.clone() });
+                                let mut sched = scheduler.lock().await;
+                                sched.mark_succeeded(&epic.id);
+                            }
+                            Ok(MergeResult::Conflict) => {
+                                let _ = tx.send(AppEvent::EpicConflict { id: epic.id.clone() });
+                                let mut sched = scheduler.lock().await;
+                                sched.mark_failed(&epic.id);
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::EpicFailed {
+                                    id: epic.id.clone(),
+                                    reason: e.to_string(),
+                                });
+                                let mut sched = scheduler.lock().await;
+                                sched.mark_failed(&epic.id);
+                            }
+                        }
+                        let _ = worktree::remove(&config.repo, &wt).await;
+                    }
+                    Ok(None) => {
+                        let _ = tx.send(AppEvent::EpicFailed {
+                            id: epic.id.clone(),
+                            reason: "verify failed after retry".to_string(),
+                        });
+                        let mut sched = scheduler.lock().await;
+                        sched.mark_failed(&epic.id);
+                    }
+                    Err(e) => {
+                        let _ = tx.send(AppEvent::EpicFailed {
+                            id: epic.id.clone(),
+                            reason: e.to_string(),
+                        });
+                        let mut sched = scheduler.lock().await;
+                        sched.mark_failed(&epic.id);
+                    }
+                }
+                let sched = scheduler.lock().await;
+                for (eid, state) in sched.snapshot() {
+                    if state == EpicState::Skipped {
+                        let _ = tx.send(AppEvent::EpicSkipped { id: eid });
+                    }
+                }
+            }));
+        }
+    }
+
+    for handle in handles {
+        let _ = handle.await;
+    }
+    let _ = tx.send(AppEvent::Done);
+    Ok(())
 }
 
 #[cfg(test)]

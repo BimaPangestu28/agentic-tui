@@ -1,11 +1,11 @@
-//! PRD generator TUI. Drives `claude -p` to generate a PRD from a goal, then
-//! shows streaming progress in the terminal.
+//! Agentic orchestrator TUI. Picks a workspace, plans a goal into epics, then
+//! drives worktree-isolated `claude -p` sessions that implement and verify each
+//! epic, merging passing epics into an integration branch.
 //!
 //! Usage:
-//!   cargo run -- "Add per-tenant rate limiting in the API gateway" --repo /path/to/repo
+//!   cargo run -- "<goal>" [--workspace <name|path>] [--verify "<cmd>"]
 //!
-//! Prerequisites: the Claude Code CLI installed on PATH, and a subscription
-//! login (do not set ANTHROPIC_API_KEY if you want to use the subscription limit).
+//! Prerequisites: the Claude Code CLI on PATH, a subscription login, and git.
 
 mod app;
 mod config;
@@ -18,7 +18,6 @@ mod workspace;
 mod worktree;
 
 use std::io::stdout;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::{
@@ -31,36 +30,29 @@ use tokio::sync::mpsc;
 
 use app::{App, Phase};
 use event::AppEvent;
+use workspace::Workspace;
 
-fn slugify(goal: &str) -> String {
-    let words: Vec<String> = goal
-        .to_lowercase()
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .take(6)
-        .map(|w| w.to_string())
-        .collect();
-    if words.is_empty() {
-        "prd".to_string()
-    } else {
-        words.join("-")
-    }
+struct Args {
+    goal: String,
+    workspace: Option<String>,
+    verify: Option<String>,
 }
 
-fn parse_args() -> Option<(String, PathBuf)> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+fn parse_args() -> Option<Args> {
+    let raw: Vec<String> = std::env::args().skip(1).collect();
     let mut goal_parts: Vec<String> = Vec::new();
-    let mut repo = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    let mut workspace = None;
+    let mut verify = None;
     let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--repo" => {
+    while i < raw.len() {
+        match raw[i].as_str() {
+            "--workspace" => {
                 i += 1;
-                if i < args.len() {
-                    repo = PathBuf::from(&args[i]);
-                }
+                workspace = raw.get(i).cloned();
+            }
+            "--verify" => {
+                i += 1;
+                verify = raw.get(i).cloned();
             }
             other => goal_parts.push(other.to_string()),
         }
@@ -70,40 +62,97 @@ fn parse_args() -> Option<(String, PathBuf)> {
     if goal.is_empty() {
         None
     } else {
-        Some((goal, repo))
+        Some(Args { goal, workspace, verify })
     }
+}
+
+/// Resolve the chosen workspace: match `--workspace` by name or path, otherwise
+/// show the picker. Returns None if the user quits the picker.
+fn resolve_workspace(
+    args: &Args,
+    workspaces: &[Workspace],
+) -> anyhow::Result<Option<Workspace>> {
+    if let Some(wanted) = &args.workspace {
+        if let Some(found) = workspaces.iter().find(|w| &w.name == wanted) {
+            return Ok(Some(found.clone()));
+        }
+        let path = workspace::expand_tilde(wanted);
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "workspace".to_string());
+        return Ok(Some(Workspace { name, path }));
+    }
+    run_picker(workspaces)
+}
+
+/// Blocking picker loop on its own alternate screen.
+fn run_picker(workspaces: &[Workspace]) -> anyhow::Result<Option<Workspace>> {
+    if workspaces.is_empty() {
+        anyhow::bail!(
+            "no workspaces configured. Add entries to {} or pass --workspace <path>",
+            workspace::default_config_path().display()
+        );
+    }
+    enable_raw_mode()?;
+    let mut out = stdout();
+    execute!(out, EnterAlternateScreen)?;
+    let backend = CrosstermBackend::new(out);
+    let mut terminal = Terminal::new(backend)?;
+    let mut selected = 0usize;
+    let chosen = loop {
+        terminal.draw(|f| ui::render_picker(f, workspaces, selected))?;
+        if let Event::Key(key) = crossterm::event::read()? {
+            match key.code {
+                KeyCode::Up => selected = selected.saturating_sub(1),
+                KeyCode::Down => {
+                    if selected + 1 < workspaces.len() {
+                        selected += 1;
+                    }
+                }
+                KeyCode::Enter => break Some(workspaces[selected].clone()),
+                KeyCode::Char('q') => break None,
+                _ => {}
+            }
+        }
+    };
+    disable_raw_mode()?;
+    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
+    Ok(chosen)
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let (goal, repo) = match parse_args() {
-        Some(v) => v,
+    let args = match parse_args() {
+        Some(a) => a,
         None => {
-            eprintln!("usage: agentic-tui \"<goal>\" [--repo <path>]");
+            eprintln!("usage: agentic-tui \"<goal>\" [--workspace <name|path>] [--verify \"<cmd>\"]");
             std::process::exit(1);
         }
     };
-    let repo = repo.canonicalize().unwrap_or(repo);
-    if !repo.is_dir() {
-        eprintln!("repo not found: {}", repo.display());
-        std::process::exit(1);
-    }
 
-    let out_path = format!("docs/prd/{}.md", slugify(&goal));
-    // Ensure the output folder exists so Write succeeds immediately.
-    let _ = std::fs::create_dir_all(repo.join("docs/prd"));
+    let workspaces = workspace::load_workspaces(&workspace::default_config_path())
+        .unwrap_or_default();
+    let selected = match resolve_workspace(&args, &workspaces)? {
+        Some(w) => w,
+        None => {
+            println!("no workspace selected");
+            return Ok(());
+        }
+    };
+    workspace::validate(&selected)?;
+    let repo = selected.path.canonicalize().unwrap_or(selected.path.clone());
+    let verify_cmd = args.verify.clone().unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
 
-    let mut app = App::new(goal.clone(), config::BUDGET_USD);
+    let mut app = App::new(args.goal.clone(), selected.name.clone(), config::GLOBAL_BUDGET_USD);
 
-    // --- Event channel ---
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    // Input thread (crossterm::read is blocking, runs on a std thread).
-    let itx = tx.clone();
+    let input_tx = tx.clone();
     std::thread::spawn(move || loop {
         match crossterm::event::read() {
-            Ok(Event::Key(k)) => {
-                if itx.send(AppEvent::Input(k)).is_err() {
+            Ok(Event::Key(key)) => {
+                if input_tx.send(AppEvent::Input(key)).is_err() {
                     break;
                 }
             }
@@ -112,91 +161,126 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Tick task for the spinner and elapsed time.
-    let ttx = tx.clone();
+    let tick_tx = tx.clone();
     tokio::spawn(async move {
-        let mut iv = tokio::time::interval(Duration::from_millis(200));
+        let mut interval = tokio::time::interval(Duration::from_millis(200));
         loop {
-            iv.tick().await;
-            if ttx.send(AppEvent::Tick).is_err() {
+            interval.tick().await;
+            if tick_tx.send(AppEvent::Tick).is_err() {
                 break;
             }
         }
     });
 
-    // Pipeline task: run the PRD stage.
-    let rtx = tx.clone();
+    let pipeline_tx = tx.clone();
     let repo_run = repo.clone();
-    let out_run = out_path.clone();
+    let goal_run = args.goal.clone();
+    let verify_run = verify_cmd.clone();
     tokio::spawn(async move {
-        let stage = config::prd_stage();
-        let prompt = config::prd_prompt(&goal, &out_run);
-        let _ = rtx.send(AppEvent::Started {
-            model: stage.model.to_string(),
-            out_path: out_run.clone(),
-        });
-        match engine::run_stage(&repo_run, &stage, &prompt, &rtx).await {
-            Ok(o) => {
-                let _ = rtx.send(AppEvent::Cost(o.cost));
-                let _ = rtx.send(AppEvent::Finished { cost: o.cost, ok: o.ok });
-            }
-            Err(e) => {
-                let _ = rtx.send(AppEvent::Fatal(e.to_string()));
-            }
+        if let Err(e) = run_pipeline(&repo_run, &goal_run, &verify_run, &pipeline_tx).await {
+            let _ = pipeline_tx.send(AppEvent::Fatal(e.to_string()));
         }
     });
 
-    // --- Terminal setup ---
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    // --- Event loop ---
     loop {
         terminal.draw(|f| ui::render(f, &app))?;
         match rx.recv().await {
-            Some(AppEvent::Input(k)) => match (k.code, k.modifiers) {
+            Some(AppEvent::Input(key)) => match (key.code, key.modifiers) {
                 (KeyCode::Char('q'), _) => break,
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => break,
                 _ => {}
             },
             Some(AppEvent::Tick) => app.tick(),
-            Some(other) => app.apply(other),
+            Some(other) => {
+                let done = matches!(other, AppEvent::Done | AppEvent::Fatal(_));
+                app.apply(other);
+                if done {
+                    terminal.draw(|f| ui::render(f, &app))?;
+                }
+            }
             None => break,
         }
     }
 
-    // --- Restore ---
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Summary after leaving the TUI.
+    print_report(&app, &repo);
+    Ok(())
+}
+
+/// Plan the goal, then run the orchestrator.
+async fn run_pipeline(
+    repo: &std::path::Path,
+    goal: &str,
+    verify_cmd: &str,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) -> anyhow::Result<()> {
+    let plan_path = repo.join(".agentic-plan.json");
+    let plan_path_str = plan_path.to_string_lossy().to_string();
+    let prompt = config::plan_prompt(goal, &plan_path_str);
+    let spec = engine::StageSpec {
+        tag: "plan",
+        cwd: repo,
+        model: config::MODEL_PLAN,
+        tools: config::PLAN_TOOLS,
+        max_turns: config::PLAN_MAX_TURNS,
+        budget_usd: config::EPIC_BUDGET_USD,
+        prompt: &prompt,
+    };
+    let outcome = engine::run_stage(&spec, tx).await?;
+    let _ = tx.send(AppEvent::Cost(outcome.cost));
+
+    let plan_text = std::fs::read_to_string(&plan_path)
+        .map_err(|e| anyhow::anyhow!("plan.json was not written: {e}"))?;
+    let parsed = plan::parse_plan(&plan_text)?;
+    parsed.validate()?;
+    let _ = tx.send(AppEvent::PlanReady { epic_count: parsed.epics.len() });
+
+    let run_config = orchestrator::RunConfig {
+        repo: repo.to_path_buf(),
+        goal: goal.to_string(),
+        verify_cmd: verify_cmd.to_string(),
+        integration_branch: "agentic-integration".to_string(),
+    };
+    orchestrator::run(&parsed, run_config, tx.clone()).await?;
+    Ok(())
+}
+
+fn print_report(app: &App, repo: &std::path::Path) {
+    println!("\n=== Run report ===");
+    println!("Workspace: {}", app.workspace);
+    println!("Goal: {}", app.goal);
+    for epic in &app.epics {
+        let status = match epic.status {
+            app::EpicStatus::Merged => "merged",
+            app::EpicStatus::Failed => "failed",
+            app::EpicStatus::Skipped => "skipped",
+            app::EpicStatus::Conflict => "conflict (manual merge)",
+            _ => "incomplete",
+        };
+        println!("  [{status}] {} {}", epic.id, epic.title);
+    }
+    println!("Total cost ~${:.4}", app.total_cost);
     match app.phase {
         Phase::Done => {
-            let full = repo.join(&out_path);
-            if full.exists() {
-                println!("PRD written to: {}", full.display());
-            } else {
-                println!("Done, check {}", out_path);
-            }
-            println!("Cost ~${:.4}", app.total_cost);
             println!(
-                "Handoff to Claude Code: /clear then 'Implement {}. Work through the task breakdown one by one, and treat the acceptance criteria as a contract.'",
-                out_path
+                "Merged work is on branch 'agentic-integration' in {}. Review and merge to your main branch.",
+                repo.display()
             );
         }
         Phase::Failed => {
             if let Some(e) = &app.error {
-                eprintln!("Failed: {e}");
-            } else {
-                eprintln!("PRD generation failed. Check the log.");
+                eprintln!("Run failed: {e}");
             }
         }
-        Phase::Running => {}
+        _ => {}
     }
-
-    Ok(())
 }

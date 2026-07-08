@@ -2,15 +2,24 @@
 
 use crossterm::event::KeyEvent;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum AppEvent {
     Input(KeyEvent),
     Tick,
-    Started { model: String, out_path: String },
-    Log(String),
-    Assistant(String),
-    ToolUse(String),
+    // Streaming from a session. `tag` is "plan" or an epic id.
+    StageLog { tag: String, line: String },
+    StageAssistant { tag: String, text: String },
+    StageTool { tag: String, name: String },
+    // Lifecycle.
+    PlanReady { epic_count: usize },
+    EpicStarted { id: String, title: String },
+    EpicVerifying { id: String },
+    EpicSucceeded { id: String, cost: f64 },
+    EpicFailed { id: String, reason: String },
+    EpicSkipped { id: String },
+    EpicMerged { id: String },
+    EpicConflict { id: String },
     Cost(f64),
-    Finished { cost: f64, ok: bool },
     Fatal(String),
+    Done,
 }

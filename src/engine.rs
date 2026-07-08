@@ -1,5 +1,6 @@
 //! Engine: drives Claude Code headless (`claude -p`) as a subprocess, reads the
-//! stream-json NDJSON line by line, and emits events to the UI.
+//! stream-json NDJSON line by line, and emits tagged events to the UI. Used by
+//! both the Plan stage and each epic session.
 
 use std::path::Path;
 use std::process::Stdio;
@@ -8,44 +9,48 @@ use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::config::{self, Stage};
+use crate::config;
 use crate::event::AppEvent;
+
+pub struct StageSpec<'a> {
+    pub tag: &'a str,
+    pub cwd: &'a Path,
+    pub model: &'a str,
+    pub tools: &'a str,
+    pub max_turns: u32,
+    pub budget_usd: f64,
+    pub prompt: &'a str,
+}
 
 pub struct Outcome {
     pub cost: f64,
     pub ok: bool,
 }
 
-/// Run a single `claude -p` invocation. Each stage runs its own internal agent
-/// loop to completion. We only parse its event stream.
+/// Run a single `claude -p` invocation to completion, parsing its event stream.
 pub async fn run_stage(
-    repo: &Path,
-    stage: &Stage,
-    prompt: &str,
+    spec: &StageSpec<'_>,
     tx: &UnboundedSender<AppEvent>,
 ) -> anyhow::Result<Outcome> {
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
-        .arg(prompt)
+        .arg(spec.prompt)
         .arg("--output-format")
         .arg("stream-json")
         .arg("--verbose")
         .arg("--model")
-        .arg(stage.model)
+        .arg(spec.model)
         .arg("--allowedTools")
-        .arg(stage.tools)
+        .arg(spec.tools)
         .arg("--permission-mode")
         .arg(config::PERMISSION_MODE)
         .arg("--max-turns")
-        .arg(stage.max_turns.to_string())
-        // per-stage budget; the global circuit breaker lives in the pipeline
+        .arg(spec.max_turns.to_string())
         .arg("--max-budget-usd")
-        .arg("2.00")
-        .current_dir(repo)
+        .arg(format!("{:.2}", spec.budget_usd))
+        .current_dir(spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        // stderr is nulled so it does not block or corrupt the TUI screen.
-        // For debugging, pipe stderr and read it in a separate task.
         .stderr(Stdio::null());
 
     let mut child = cmd.spawn().map_err(|e| {
@@ -60,24 +65,28 @@ pub async fn run_stage(
 
     let mut cost = 0.0f64;
     let mut ok = false;
+    let tag = spec.tag;
 
     while let Some(line) = lines.next_line().await? {
         if line.trim().is_empty() {
             continue;
         }
-        let v: serde_json::Value = match serde_json::from_str(&line) {
+        let value: serde_json::Value = match serde_json::from_str(&line) {
             Ok(v) => v,
             Err(_) => continue, // non-JSON lines are ignored
         };
-        match v.get("type").and_then(|t| t.as_str()) {
+        match value.get("type").and_then(|t| t.as_str()) {
             Some("system") => {
-                if v.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                    let model = v.get("model").and_then(|m| m.as_str()).unwrap_or("");
-                    let _ = tx.send(AppEvent::Log(format!("session init ({model})")));
+                if value.get("subtype").and_then(|s| s.as_str()) == Some("init") {
+                    let model = value.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                    let _ = tx.send(AppEvent::StageLog {
+                        tag: tag.to_string(),
+                        line: format!("session init ({model})"),
+                    });
                 }
             }
             Some("assistant") => {
-                if let Some(content) = v
+                if let Some(content) = value
                     .get("message")
                     .and_then(|m| m.get("content"))
                     .and_then(|c| c.as_array())
@@ -85,17 +94,23 @@ pub async fn run_stage(
                     for block in content {
                         match block.get("type").and_then(|t| t.as_str()) {
                             Some("text") => {
-                                if let Some(t) = block.get("text").and_then(|t| t.as_str()) {
-                                    let first = t.trim().lines().next().unwrap_or("").trim();
+                                if let Some(text) = block.get("text").and_then(|t| t.as_str()) {
+                                    let first = text.trim().lines().next().unwrap_or("").trim();
                                     if !first.is_empty() {
                                         let preview: String = first.chars().take(120).collect();
-                                        let _ = tx.send(AppEvent::Assistant(preview));
+                                        let _ = tx.send(AppEvent::StageAssistant {
+                                            tag: tag.to_string(),
+                                            text: preview,
+                                        });
                                     }
                                 }
                             }
                             Some("tool_use") => {
                                 if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
-                                    let _ = tx.send(AppEvent::ToolUse(name.to_string()));
+                                    let _ = tx.send(AppEvent::StageTool {
+                                        tag: tag.to_string(),
+                                        name: name.to_string(),
+                                    });
                                 }
                             }
                             _ => {}
@@ -104,12 +119,13 @@ pub async fn run_stage(
                 }
             }
             Some("result") => {
-                cost = v
+                cost = value
                     .get("total_cost_usd")
                     .and_then(|c| c.as_f64())
                     .unwrap_or(0.0);
-                let is_error = v.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
-                let subtype = v.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
+                let is_error =
+                    value.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                let subtype = value.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
                 ok = !is_error && (subtype.is_empty() || subtype == "success");
             }
             _ => {}
