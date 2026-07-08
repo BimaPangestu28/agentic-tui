@@ -15,6 +15,7 @@ mod orchestrator;
 mod plan;
 mod ui;
 mod workspace;
+mod worktree;
 
 use std::io::stdout;
 use std::path::PathBuf;

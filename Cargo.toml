@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "fs"] }
 ratatui = "0.28"
 crossterm = "0.28"
 serde = { version = "1", features = ["derive"] }
