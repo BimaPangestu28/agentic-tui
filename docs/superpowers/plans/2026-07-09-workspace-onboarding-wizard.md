@@ -14,7 +14,8 @@
 - No `unwrap()` / `expect()` / `panic!` in production code paths (tests may use them).
 - Comment/prose style: direct, no em dashes, no contractions in English prose.
 - Descriptive names; verbs for functions, nouns for types.
-- Every task leaves `make verify` (fmt-check, clippy `--all-targets -- -D warnings`, tests) green. No task may introduce a function that is unused at that task's end (clippy would fail on dead code), which is why the whole interactive layer lands in one task.
+- Every task leaves `make verify` (fmt-check, clippy `--all-targets -- -D warnings`, tests) green.
+- **Binary-crate dead-code reality:** this is a `bin` crate, so an item referenced only from a `#[cfg(test)]` module is still dead in the normal binary build and `clippy -D warnings` fails on it. `scan_for_repos`, `save_workspaces`, their private helpers, the scan consts, and the `WorkspacesOut`/`RawWorkspaceOut` structs are therefore each annotated with `#[allow(dead_code)]` when introduced in Tasks 1 and 2, as temporary scaffolding. Task 3 wires all of them into the real binary code path and removes every one of these `#[allow(dead_code)]` attributes as its final implementation step, verifying the gate stays green without them. No `#[allow(dead_code)]` may remain after Task 3.
 - Conventional commits (`feat:`, `refactor:`, `docs:`). Commit after every task.
 - Work happens on the existing `feat/workspace-onboarding` branch.
 
@@ -287,13 +288,17 @@ Expected: FAIL to compile with "cannot find function `save_workspaces`".
 
 Add near the top of `src/workspace.rs`, just after the `RawWorkspace` struct:
 
+Each item is marked `#[allow(dead_code)]` because it is dead in the normal binary build until Task 3 wires it in (see Global Constraints). Task 3 removes these attributes.
+
 ```rust
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct WorkspacesOut {
     workspace: Vec<RawWorkspaceOut>,
 }
 
 #[derive(Serialize)]
+#[allow(dead_code)]
 struct RawWorkspaceOut {
     name: String,
     path: String,
@@ -306,6 +311,7 @@ Add this function after `load_workspaces`:
 /// Persist `workspaces` to `config_path`, merging with any entries already
 /// saved there. Entries are unioned by path and the existing name wins on a
 /// path conflict. The parent directory is created if it does not exist.
+#[allow(dead_code)]
 pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::Result<()> {
     let mut merged: Vec<Workspace> = load_workspaces(config_path).unwrap_or_default();
     let mut seen: HashSet<PathBuf> = merged.iter().map(|w| w.path.clone()).collect();
@@ -671,12 +677,23 @@ fn resolve_workspace(args: &Args, workspaces: &[Workspace]) -> anyhow::Result<Op
 }
 ```
 
-- [ ] **Step 7: Verify the gate is green**
+- [ ] **Step 7: Remove the temporary dead-code allows**
+
+Every item from Tasks 1 and 2 is now reached from the binary code path (`scan_for_repos`, `save_workspaces`, `load_workspaces`, `expand_tilde`, `default_config_path`, `DEFAULT_SCAN_DEPTH` via `run_onboarding`; the consts and structs via those functions), so the temporary scaffolding attributes are no longer needed. In `src/workspace.rs`, delete every `#[allow(dead_code)]` attribute that Tasks 1 and 2 added (on `DEFAULT_SCAN_DEPTH`, `MAX_SCAN_RESULTS`, `scan_for_repos`, `base_name`, `workspaces_from_paths`, `WorkspacesOut`, `RawWorkspaceOut`, and `save_workspaces`).
+
+Verify none remain:
+
+```bash
+grep -rn "allow(dead_code)" src/
+# expect: no output
+```
+
+- [ ] **Step 8: Verify the gate is green**
 
 Run: `make verify`
-Expected: fmt-check, clippy (no dead-code or unused warnings), and all tests pass.
+Expected: fmt-check, clippy (no dead-code or unused warnings, and none suppressed), and all tests pass. If clippy now reports any item as dead, it means that item is not actually wired into the binary path yet; wire it rather than re-adding an allow.
 
-- [ ] **Step 8: Manual verification of the first-run wizard**
+- [ ] **Step 9: Manual verification of the first-run wizard**
 
 The scan should never trigger a real Claude run during testing. Abort before that.
 
@@ -702,7 +719,7 @@ cat ~/.config/agentic-tui/workspaces.toml
 # expect a [[workspace]] block with name = "sample" and path = "/tmp/wiz-demo/sample"
 ```
 
-- [ ] **Step 9: Manual verification of the `a` hotkey**
+- [ ] **Step 10: Manual verification of the `a` hotkey**
 
 With the config now populated:
 
@@ -722,10 +739,10 @@ cat ~/.config/agentic-tui/workspaces.toml   # expect both sample and second
 rm -rf /tmp/wiz-demo ~/.config/agentic-tui/workspaces.toml   # clean up the demo
 ```
 
-- [ ] **Step 10: Commit**
+- [ ] **Step 11: Commit**
 
 ```bash
-git add src/ui.rs src/main.rs
+git add src/ui.rs src/main.rs src/workspace.rs
 git commit -m "feat: onboard workspaces with an interactive scan wizard
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
