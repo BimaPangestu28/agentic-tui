@@ -1,7 +1,7 @@
 //! Loading and validating workspaces from `~/.config/agentic-tui/workspaces.toml`.
 //! A workspace is a single project root that every session runs inside.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -10,7 +10,7 @@ pub struct Workspace {
     pub path: PathBuf,
 }
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Deserialize)]
 struct WorkspacesFile {
@@ -20,6 +20,19 @@ struct WorkspacesFile {
 
 #[derive(Debug, Deserialize)]
 struct RawWorkspace {
+    name: String,
+    path: String,
+}
+
+#[derive(Serialize)]
+#[allow(dead_code)]
+struct WorkspacesOut {
+    workspace: Vec<RawWorkspaceOut>,
+}
+
+#[derive(Serialize)]
+#[allow(dead_code)]
+struct RawWorkspaceOut {
     name: String,
     path: String,
 }
@@ -63,6 +76,37 @@ pub fn load_workspaces(config_path: &Path) -> anyhow::Result<Vec<Workspace>> {
     let text = std::fs::read_to_string(config_path)
         .map_err(|e| anyhow::anyhow!("could not read {}: {e}", config_path.display()))?;
     parse_workspaces_str(&text)
+}
+
+/// Persist `workspaces` to `config_path`, merging with any entries already
+/// saved there. Entries are unioned by path and the existing name wins on a
+/// path conflict. The parent directory is created if it does not exist.
+#[allow(dead_code)]
+pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::Result<()> {
+    let mut merged: Vec<Workspace> = load_workspaces(config_path).unwrap_or_default();
+    let mut seen: HashSet<PathBuf> = merged.iter().map(|w| w.path.clone()).collect();
+    for workspace in workspaces {
+        if seen.insert(workspace.path.clone()) {
+            merged.push(workspace.clone());
+        }
+    }
+
+    let out = WorkspacesOut {
+        workspace: merged
+            .iter()
+            .map(|w| RawWorkspaceOut {
+                name: w.name.clone(),
+                path: w.path.to_string_lossy().to_string(),
+            })
+            .collect(),
+    };
+    let text = toml::to_string(&out)?;
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config_path, text)?;
+    Ok(())
 }
 
 /// Ensure a workspace points at a real git repository directory.
@@ -264,5 +308,54 @@ path = "/tmp/portfolio"
         assert_eq!(names, vec!["x/proj".to_string(), "y/proj".to_string()]);
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn save_unions_with_existing_and_round_trips() {
+        let dir = std::env::temp_dir().join(format!("save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("nested/workspaces.toml");
+
+        let first = vec![
+            Workspace {
+                name: "a".to_string(),
+                path: PathBuf::from("/tmp/a"),
+            },
+            Workspace {
+                name: "b".to_string(),
+                path: PathBuf::from("/tmp/b"),
+            },
+        ];
+        save_workspaces(&config, &first).unwrap();
+        let loaded = load_workspaces(&config).unwrap();
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0], first[0]);
+
+        // A second save with an overlapping path unions by path; the existing name
+        // for /tmp/b is kept, and /tmp/c is added.
+        let more = vec![
+            Workspace {
+                name: "b-renamed".to_string(),
+                path: PathBuf::from("/tmp/b"),
+            },
+            Workspace {
+                name: "c".to_string(),
+                path: PathBuf::from("/tmp/c"),
+            },
+        ];
+        save_workspaces(&config, &more).unwrap();
+        let loaded = load_workspaces(&config).unwrap();
+        assert_eq!(
+            loaded.len(),
+            3,
+            "union should be a, b, c with no duplicate b"
+        );
+        let b = loaded
+            .iter()
+            .find(|w| w.path == Path::new("/tmp/b"))
+            .unwrap();
+        assert_eq!(b.name, "b", "existing name is kept on a path conflict");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
