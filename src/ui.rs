@@ -1,5 +1,5 @@
 //! TUI rendering: a workspace picker screen, then the run view (header, epic
-//! list, log, status footer).
+//! kanban board, log, status footer).
 
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -146,7 +146,12 @@ fn render_board(f: &mut Frame, app: &App, area: Rect) {
         let mut items: Vec<ListItem> = Vec::new();
         for epic in cards.iter().take(visible) {
             let (marker, color) = card_marker(epic, *column, &status_by_id);
-            let text = truncate(&format!("{marker} {}", epic.id), card_width);
+            let label = if epic.title.is_empty() {
+                epic.id.clone()
+            } else {
+                format!("{} {}", epic.id, epic.title)
+            };
+            let text = truncate(&format!("{marker} {label}"), card_width);
             items.push(ListItem::new(Line::from(Span::styled(
                 text,
                 Style::default().fg(color),
