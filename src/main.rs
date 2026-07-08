@@ -3,7 +3,10 @@
 //! epic, merging passing epics into an integration branch.
 //!
 //! Usage:
-//!   cargo run -- "<goal>" [--workspace <name|path>] [--verify "<cmd>"]
+//!   cargo run -- ["<goal>"] [--workspace <name|path>] [--verify "<cmd>"]
+//!
+//! The goal is optional; if omitted it is typed in the TUI after the workspace
+//! is chosen.
 //!
 //! Prerequisites: the Claude Code CLI on PATH, a subscription login, and git.
 
