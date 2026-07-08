@@ -79,6 +79,21 @@ pub async fn remove(repo: &Path, worktree: &EpicWorktree) -> anyhow::Result<()> 
     Ok(())
 }
 
+/// Remove every epic worktree and the `.agentic-worktrees` scratch directory,
+/// then prune git's now-stale worktree registrations. Best-effort and used on
+/// abort to leave the workspace tidy. Branches are left untouched, so any epic
+/// that already merged survives on the integration branch.
+pub async fn cleanup_all(repo: &Path) -> anyhow::Result<()> {
+    let root = worktrees_root(repo);
+    if root.exists() {
+        tokio::fs::remove_dir_all(&root).await.ok();
+    }
+    // Prune after deletion so git forgets the worktrees whose directories are
+    // now gone. A repo with no registered worktrees makes this a no-op.
+    let _ = run_git(repo, &["worktree", "prune"]).await;
+    Ok(())
+}
+
 /// Merge an epic branch into the integration branch without disturbing the main
 /// working tree. The integration branch is created from the repo HEAD on first
 /// use and checked out in a dedicated worktree; all merges happen there. Returns
@@ -205,6 +220,64 @@ mod tests {
             merge_into(&tmp, &wt2.branch, "integration").await.unwrap(),
             MergeResult::Conflict
         );
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn cleanup_all_removes_worktrees_but_keeps_merged_branches() {
+        let tmp = std::env::temp_dir().join(format!("wt-cleanup-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        // One epic worktree, and its work merged into the integration branch
+        // (which creates the .integration worktree too).
+        let wt = create(&tmp, "epic-1", "HEAD").await.unwrap();
+        tokio::fs::write(wt.path.join("feature.txt"), "hi\n")
+            .await
+            .unwrap();
+        git(&wt.path, &["add", "-A"]).await;
+        git(&wt.path, &["commit", "-m", "epic-1 work"]).await;
+        assert_eq!(
+            merge_into(&tmp, &wt.branch, "integration").await.unwrap(),
+            MergeResult::Merged
+        );
+
+        cleanup_all(&tmp).await.unwrap();
+
+        // The scratch directory is gone and git no longer lists any worktree
+        // other than the main checkout.
+        assert!(
+            !tmp.join(".agentic-worktrees").exists(),
+            "scratch directory should be removed"
+        );
+        let listed = Command::new("git")
+            .args(["worktree", "list"])
+            .current_dir(&tmp)
+            .output()
+            .await
+            .unwrap();
+        let listing = String::from_utf8_lossy(&listed.stdout);
+        assert!(
+            !listing.contains(".agentic-worktrees"),
+            "no epic worktrees should remain registered, got:\n{listing}"
+        );
+
+        // The merged work still lives on the integration branch.
+        let branch = Command::new("git")
+            .args(["rev-parse", "--verify", "integration"])
+            .current_dir(&tmp)
+            .output()
+            .await
+            .unwrap();
+        assert!(
+            branch.status.success(),
+            "integration branch should survive cleanup"
+        );
+
+        // cleanup_all is idempotent: a second run on a tidy repo is a no-op.
+        cleanup_all(&tmp).await.unwrap();
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }
