@@ -22,6 +22,7 @@ async fn run_git(repo: &Path, args: &[&str]) -> anyhow::Result<std::process::Out
     let output = Command::new("git")
         .args(args)
         .current_dir(repo)
+        .kill_on_drop(true)
         .output()
         .await
         .map_err(|e| anyhow::anyhow!("failed to run git {:?}: {e}", args))?;
@@ -45,14 +46,20 @@ fn worktrees_root(repo: &Path) -> PathBuf {
     repo.join(".agentic-worktrees")
 }
 
-/// Create a worktree and branch for an epic, based off the repo HEAD.
-pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree> {
+/// Create a worktree and branch for an epic, based off `base_ref` (a commit,
+/// branch, or "HEAD"). Dependency-free epics use HEAD; dependent epics use the
+/// integration branch so they inherit their merged dependencies.
+pub async fn create(repo: &Path, epic_id: &str, base_ref: &str) -> anyhow::Result<EpicWorktree> {
     let branch = format!("agentic/{epic_id}");
     let path = worktrees_root(repo).join(epic_id);
     let path_str = path.to_string_lossy().to_string();
     let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
     let _ = run_git(repo, &["branch", "-D", &branch]).await;
-    run_git_checked(repo, &["worktree", "add", "-b", &branch, &path_str, "HEAD"]).await?;
+    run_git_checked(
+        repo,
+        &["worktree", "add", "-b", &branch, &path_str, base_ref],
+    )
+    .await?;
     Ok(EpicWorktree { path, branch })
 }
 
@@ -153,7 +160,7 @@ mod tests {
         tokio::fs::create_dir_all(&tmp).await.unwrap();
         init_repo(&tmp).await;
 
-        let wt = create(&tmp, "epic-1").await.unwrap();
+        let wt = create(&tmp, "epic-1", "HEAD").await.unwrap();
         tokio::fs::write(wt.path.join("feature.txt"), "hi\n")
             .await
             .unwrap();
@@ -179,7 +186,7 @@ mod tests {
         tokio::fs::create_dir_all(&tmp).await.unwrap();
         init_repo(&tmp).await;
 
-        let wt1 = create(&tmp, "epic-1").await.unwrap();
+        let wt1 = create(&tmp, "epic-1", "HEAD").await.unwrap();
         tokio::fs::write(wt1.path.join("base.txt"), "from epic-1\n")
             .await
             .unwrap();
@@ -189,7 +196,7 @@ mod tests {
             MergeResult::Merged
         );
 
-        let wt2 = create(&tmp, "epic-2").await.unwrap();
+        let wt2 = create(&tmp, "epic-2", "HEAD").await.unwrap();
         tokio::fs::write(wt2.path.join("base.txt"), "from epic-2\n")
             .await
             .unwrap();
@@ -197,6 +204,35 @@ mod tests {
         assert_eq!(
             merge_into(&tmp, &wt2.branch, "integration").await.unwrap(),
             MergeResult::Conflict
+        );
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn an_epic_based_on_integration_inherits_merged_work() {
+        let tmp = std::env::temp_dir().join(format!("wt-baseref-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        // First epic adds a file and merges into the integration branch.
+        let wt1 = create(&tmp, "epic-1", "HEAD").await.unwrap();
+        tokio::fs::write(wt1.path.join("from_a.txt"), "a\n")
+            .await
+            .unwrap();
+        git(&wt1.path, &["add", "-A"]).await;
+        git(&wt1.path, &["commit", "-m", "epic-1"]).await;
+        assert_eq!(
+            merge_into(&tmp, &wt1.branch, "integration").await.unwrap(),
+            MergeResult::Merged
+        );
+
+        // A dependent epic based on the integration branch must see epic-1's file.
+        let wt2 = create(&tmp, "epic-2", "integration").await.unwrap();
+        assert!(
+            wt2.path.join("from_a.txt").exists(),
+            "epic based on integration should inherit merged dependency work"
         );
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;

@@ -184,7 +184,15 @@ async fn run_epic(
     tx: &UnboundedSender<AppEvent>,
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
     for attempt in 0..2 {
-        let wt = worktree::create(&config.repo, &epic.id).await?;
+        // A dependency-free epic branches from HEAD; a dependent epic branches
+        // from the integration branch, which already holds its merged deps
+        // (an epic only becomes ready after all its deps have merged).
+        let base_ref = if epic.depends_on.is_empty() {
+            "HEAD".to_string()
+        } else {
+            config.integration_branch.clone()
+        };
+        let wt = worktree::create(&config.repo, &epic.id, &base_ref).await?;
         let prompt = crate::config::epic_prompt(&config.goal, epic, &config.verify_cmd);
         let spec = StageSpec {
             tag: &epic.id,

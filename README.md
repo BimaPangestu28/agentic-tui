@@ -139,3 +139,13 @@ make run GOAL="Add a health check endpoint" WORKSPACE=greentic
 - The engine (`engine.rs`) is a single generic `run_stage` function shared by
   the Plan stage and every epic session; only the working directory, model,
   tool list, and prompt differ between them.
+
+## Known limitations (v1)
+
+- On abort (q/Ctrl-C), running child processes are killed but the
+  `.agentic-worktrees/` directory is left in place. The next run reuses it or
+  force-recreates it.
+- The global budget is checked before starting each new epic. Epics already
+  in flight still finish, so the final cost can slightly exceed the budget.
+- Merge conflicts are reported and left on the `agentic/<epic-id>` branch for
+  manual merge. They are not auto-resolved.
