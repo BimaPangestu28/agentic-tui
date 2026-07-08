@@ -67,8 +67,14 @@ path = "~/Works/personal/greentic"
 ```
 
 Add one `[[workspace]]` block per project. Every workspace path must be an
-existing directory that is a git repository (it must contain a `.git`), or
-the run fails with a clear error before any Claude session starts.
+existing directory that is a git repository (it must contain a `.git`), or the
+run fails with a clear error before any Claude session starts.
+
+You do not have to write this file by hand. On the first run with no
+`--workspace` and no config, an onboarding wizard scans a folder you choose
+(your home directory by default) for git repositories, lets you pick the ones
+you want with Space, and saves them here for you. From the picker you can press
+`a` at any time to run the wizard again and add more.
 
 ## Prerequisites
 
@@ -88,8 +94,10 @@ the run fails with a clear error before any Claude session starts.
 cargo run -- "Add per-tenant rate limiting in the API gateway"
 ```
 
-With no `--workspace`, this opens the workspace picker (up/down, Enter, `q`
-to quit). To skip the picker, pass a configured name or a raw path:
+With no `--workspace`, this opens the workspace picker (up/down, Enter, `a` to
+add a workspace, `q` to quit). The first time you run it with no configured
+workspaces, the onboarding wizard runs instead. To skip both, pass a configured
+name or a raw path:
 
 ```bash
 cargo run -- "Add a health check endpoint" --workspace greentic
