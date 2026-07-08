@@ -11,6 +11,7 @@ mod app;
 mod config;
 mod engine;
 mod event;
+mod plan;
 mod ui;
 mod workspace;
 
