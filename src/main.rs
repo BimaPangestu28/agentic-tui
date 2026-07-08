@@ -249,6 +249,8 @@ async fn run_pipeline(
         goal: goal.to_string(),
         verify_cmd: verify_cmd.to_string(),
         integration_branch: "agentic-integration".to_string(),
+        budget_usd: config::GLOBAL_BUDGET_USD,
+        initial_cost: outcome.cost,
     };
     orchestrator::run(&parsed, run_config, tx.clone()).await?;
     Ok(())

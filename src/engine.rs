@@ -51,7 +51,8 @@ pub async fn run_stage(
         .current_dir(spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::null());
+        .stderr(Stdio::null())
+        .kill_on_drop(true);
 
     let mut child = cmd.spawn().map_err(|e| {
         anyhow::anyhow!("failed to spawn `claude` (make sure the CLI is installed on PATH): {e}")

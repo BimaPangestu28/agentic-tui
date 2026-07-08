@@ -147,6 +147,8 @@ pub struct RunConfig {
     pub goal: String,
     pub verify_cmd: String,
     pub integration_branch: String,
+    pub budget_usd: f64,
+    pub initial_cost: f64,
 }
 
 /// Run `verify_cmd` inside a worktree. Returns true on exit code 0.
@@ -155,17 +157,19 @@ async fn run_verify(worktree_path: &std::path::Path, verify_cmd: &str) -> bool {
         .arg("-c")
         .arg(verify_cmd)
         .current_dir(worktree_path)
+        .kill_on_drop(true)
         .status()
         .await;
     matches!(status, Ok(s) if s.success())
 }
 
 /// Run one epic: create worktree, run the session, then verify. On failure,
-/// retry once. Returns Ok(Some(worktree)) if it passed (ready to merge),
-/// Ok(None) if it failed after retry.
+/// retry once. Accumulates session cost into `spent`. Returns Ok(Some(worktree))
+/// if it passed (ready to merge), Ok(None) if it failed after retry.
 async fn run_epic(
     epic: &Epic,
     config: &RunConfig,
+    spent: &Arc<Mutex<f64>>,
     tx: &UnboundedSender<AppEvent>,
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
     for attempt in 0..2 {
@@ -181,7 +185,12 @@ async fn run_epic(
             prompt: &prompt,
         };
         let outcome = engine::run_stage(&spec, tx).await?;
-        let _ = tx.send(AppEvent::Cost(outcome.cost));
+        let running_total = {
+            let mut total = spent.lock().await;
+            *total += outcome.cost;
+            *total
+        };
+        let _ = tx.send(AppEvent::Cost(running_total));
         let _ = tx.send(AppEvent::EpicVerifying { id: epic.id.clone() });
         if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
             let _ = tx.send(AppEvent::EpicSucceeded {
@@ -203,7 +212,8 @@ async fn run_epic(
 
 /// Drive the whole Implement + Integrate flow. Schedules epics respecting
 /// dependencies and the parallel cap, verifies each, and merges passing epics
-/// into the integration branch in the order they finish.
+/// into the integration branch in the order they finish. Stops starting new
+/// epics once the global budget is reached.
 pub async fn run(
     plan: &Plan,
     config: RunConfig,
@@ -216,22 +226,34 @@ pub async fn run(
         .collect();
     let scheduler = Arc::new(Mutex::new(Scheduler::new(plan, config::MAX_PARALLEL_EPICS)));
     let config = Arc::new(config);
+    let spent = Arc::new(Mutex::new(config.initial_cost));
     let merge_lock = Arc::new(Mutex::new(()));
     let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     loop {
+        let over_budget = *spent.lock().await >= config.budget_usd;
         let ready = {
             let sched = scheduler.lock().await;
             if sched.is_done() {
                 break;
             }
-            sched.next_ready()
+            if over_budget {
+                Vec::new()
+            } else {
+                sched.next_ready()
+            }
         };
 
         if ready.is_empty() {
             if let Some(handle) = handles.pop() {
                 let _ = handle.await;
             } else {
+                if over_budget {
+                    let _ = tx.send(AppEvent::StageLog {
+                        tag: "orchestrator".to_string(),
+                        line: "global budget reached, not starting new epics".to_string(),
+                    });
+                }
                 break;
             }
             continue;
@@ -249,10 +271,11 @@ pub async fn run(
             });
             let scheduler = scheduler.clone();
             let config = config.clone();
+            let spent = spent.clone();
             let tx = tx.clone();
             let merge_lock = merge_lock.clone();
             handles.push(tokio::spawn(async move {
-                match run_epic(&epic, &config, &tx).await {
+                match run_epic(&epic, &config, &spent, &tx).await {
                     Ok(Some(wt)) => {
                         let merged = {
                             let _guard = merge_lock.lock().await;
@@ -266,13 +289,18 @@ pub async fn run(
                         match merged {
                             Ok(MergeResult::Merged) => {
                                 let _ = tx.send(AppEvent::EpicMerged { id: epic.id.clone() });
-                                let mut sched = scheduler.lock().await;
-                                sched.mark_succeeded(&epic.id);
+                                {
+                                    let mut sched = scheduler.lock().await;
+                                    sched.mark_succeeded(&epic.id);
+                                }
+                                // Remove the worktree only once its work is safely merged.
+                                let _ = worktree::remove(&config.repo, &wt).await;
                             }
                             Ok(MergeResult::Conflict) => {
                                 let _ = tx.send(AppEvent::EpicConflict { id: epic.id.clone() });
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
+                                // Keep the worktree and branch agentic/<id> for manual merge.
                             }
                             Err(e) => {
                                 let _ = tx.send(AppEvent::EpicFailed {
@@ -281,9 +309,9 @@ pub async fn run(
                                 });
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
+                                // Keep the worktree and branch for diagnosis.
                             }
                         }
-                        let _ = worktree::remove(&config.repo, &wt).await;
                     }
                     Ok(None) => {
                         let _ = tx.send(AppEvent::EpicFailed {

@@ -6,7 +6,8 @@ pub const PERMISSION_MODE: &str = "acceptEdits";
 const STYLE: &str = "Write directly and concisely. Do not use em dashes. Do \
 not use contractions in English prose. Avoid AI-sounding filler.";
 
-// Global cost circuit breaker across every session in a run.
+// Global cost brake: once accumulated cost reaches this, the orchestrator stops
+// starting new epics. Epics already in flight still finish.
 pub const GLOBAL_BUDGET_USD: f64 = 10.0;
 // Budget for a single stage (plan or one epic).
 pub const EPIC_BUDGET_USD: f64 = 2.0;
