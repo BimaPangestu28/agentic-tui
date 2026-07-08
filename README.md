@@ -1,5 +1,12 @@
 # Agentic Orchestrator TUI
 
+![Rust](https://img.shields.io/badge/Rust-1.75%2B-orange?logo=rust&logoColor=white)
+![TUI](https://img.shields.io/badge/TUI-ratatui-1f6feb)
+![Async](https://img.shields.io/badge/async-tokio-000000)
+![Requires](https://img.shields.io/badge/requires-Claude%20Code%20CLI-8a2be2)
+![Platform](https://img.shields.io/badge/platform-macOS%20%7C%20Linux-lightgrey)
+![Version](https://img.shields.io/badge/version-0.1.0-blue)
+
 A Rust + ratatui tool that takes a goal, breaks it into epics with Claude Code,
 then implements and verifies each epic in an isolated git worktree before
 merging passing work into an integration branch. It drives `claude -p` as a
