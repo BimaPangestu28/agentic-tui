@@ -46,45 +46,78 @@ fn worktrees_root(repo: &Path) -> PathBuf {
     repo.join(".agentic-worktrees")
 }
 
-/// Create a worktree and branch for an epic, based off the repo main branch.
+/// Create a worktree and branch for an epic, based off the repo HEAD.
 pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree> {
     let branch = format!("agentic/{epic_id}");
     let path = worktrees_root(repo).join(epic_id);
     let path_str = path.to_string_lossy().to_string();
     let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
     let _ = run_git(repo, &["branch", "-D", &branch]).await;
-    run_git_checked(repo, &["worktree", "add", "-b", &branch, &path_str, "main"]).await?;
+    run_git_checked(repo, &["worktree", "add", "-b", &branch, &path_str, "HEAD"]).await?;
     Ok(EpicWorktree { id: epic_id.to_string(), path, branch })
 }
 
-/// Remove an epic worktree and delete its branch.
+/// Remove an epic worktree and delete its branch. Idempotent: a path that is
+/// already gone is not an error. Branch deletion is best-effort.
 pub async fn remove(repo: &Path, worktree: &EpicWorktree) -> anyhow::Result<()> {
     let path_str = worktree.path.to_string_lossy().to_string();
-    let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
+    let output = run_git(repo, &["worktree", "remove", "--force", &path_str]).await?;
+    if !output.status.success() && worktree.path.exists() {
+        anyhow::bail!(
+            "failed to remove worktree {}: {}",
+            path_str,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
     let _ = run_git(repo, &["branch", "-D", &worktree.branch]).await;
     Ok(())
 }
 
-/// Merge an epic branch into the integration branch, creating it from HEAD on
-/// first use. Returns Conflict (and aborts the merge) if it does not apply cleanly.
+/// Merge an epic branch into the integration branch without disturbing the main
+/// working tree. The integration branch is created from the repo HEAD on first
+/// use and checked out in a dedicated worktree; all merges happen there. Returns
+/// Conflict (and aborts the merge) if the branch does not apply cleanly.
 pub async fn merge_into(
     repo: &Path,
     branch: &str,
     integration_branch: &str,
 ) -> anyhow::Result<MergeResult> {
-    let exists = run_git(repo, &["rev-parse", "--verify", integration_branch])
+    // The epic branch must exist, so a genuine merge failure can only be a
+    // content conflict, not a bad ref.
+    let branch_ok = run_git(repo, &["rev-parse", "--verify", branch])
         .await?
         .status
         .success();
-    if !exists {
+    if !branch_ok {
+        anyhow::bail!("cannot merge unknown branch: {branch}");
+    }
+
+    // Create the integration branch from HEAD on first use.
+    let integration_exists = run_git(repo, &["rev-parse", "--verify", integration_branch])
+        .await?
+        .status
+        .success();
+    if !integration_exists {
         run_git_checked(repo, &["branch", integration_branch, "HEAD"]).await?;
     }
-    run_git_checked(repo, &["checkout", integration_branch]).await?;
-    let merge = run_git(repo, &["merge", "--no-edit", branch]).await?;
+
+    // Ensure a dedicated worktree holds the integration branch, so merges never
+    // touch the main working tree.
+    let integration_path = worktrees_root(repo).join(".integration");
+    let integration_path_str = integration_path.to_string_lossy().to_string();
+    if !integration_path.exists() {
+        run_git_checked(
+            repo,
+            &["worktree", "add", &integration_path_str, integration_branch],
+        )
+        .await?;
+    }
+
+    let merge = run_git(&integration_path, &["merge", "--no-edit", branch]).await?;
     if merge.status.success() {
         Ok(MergeResult::Merged)
     } else {
-        let _ = run_git(repo, &["merge", "--abort"]).await;
+        let _ = run_git(&integration_path, &["merge", "--abort"]).await;
         Ok(MergeResult::Conflict)
     }
 }
@@ -126,7 +159,11 @@ mod tests {
 
         let result = merge_into(&tmp, &wt.branch, "integration").await.unwrap();
         assert_eq!(result, MergeResult::Merged);
-        assert!(tmp.join("feature.txt").exists());
+        let integration_file = tmp.join(".agentic-worktrees/.integration/feature.txt");
+        assert!(
+            integration_file.exists(),
+            "merged file should be present on the integration branch"
+        );
 
         remove(&tmp, &wt).await.unwrap();
         let _ = tokio::fs::remove_dir_all(&tmp).await;
