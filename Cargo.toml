@@ -2,6 +2,12 @@
 name = "agentic-tui"
 version = "0.1.0"
 edition = "2021"
+description = "A Rust + ratatui orchestrator that plans a goal into epics and drives worktree-isolated Claude Code sessions to implement, verify, and merge them."
+license = "MIT"
+repository = "https://github.com/BimaPangestu28/agentic-tui"
+readme = "README.md"
+keywords = ["tui", "orchestrator", "claude", "ratatui", "agentic"]
+categories = ["command-line-utilities", "development-tools"]
 
 [dependencies]
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time", "fs"] }
