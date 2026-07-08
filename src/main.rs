@@ -12,6 +12,7 @@ mod config;
 mod engine;
 mod event;
 mod ui;
+mod workspace;
 
 use std::io::stdout;
 use std::path::PathBuf;
