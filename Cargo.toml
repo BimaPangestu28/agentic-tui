@@ -1,0 +1,11 @@
+[package]
+name = "agentic-tui"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "process", "io-util", "sync", "time"] }
+ratatui = "0.28"
+crossterm = "0.28"
+serde_json = "1"
+anyhow = "1"

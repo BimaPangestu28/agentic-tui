@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target
+
+# Generated PRD output (runtime artifacts, not source)
+/docs/prd/
+
+# Environment / local overrides
+*.env
+.env.local
+
+# OS noise
+.DS_Store
