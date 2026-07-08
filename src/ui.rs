@@ -106,6 +106,7 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
 fn status_glyph(status: EpicStatus) -> (&'static str, Color) {
     match status {
+        EpicStatus::Pending => ("pending  ", Color::DarkGray),
         EpicStatus::Running => ("running  ", Color::Yellow),
         EpicStatus::Verifying => ("verifying", Color::Yellow),
         EpicStatus::Merged => ("merged   ", Color::Green),

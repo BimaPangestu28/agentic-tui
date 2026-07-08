@@ -1,6 +1,6 @@
 //! State rendered by the UI: the run phase, one view per epic, and a log.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::time::Instant;
 
 use crate::event::AppEvent;
@@ -17,12 +17,46 @@ pub enum Phase {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum EpicStatus {
+    // Used by the kanban board seeding added in a later task.
+    #[allow(dead_code)]
+    Pending,
     Running,
     Verifying,
     Merged,
     Failed,
     Skipped,
     Conflict,
+}
+
+// Used by the kanban board renderer added in a later task.
+#[allow(dead_code)]
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum KanbanColumn {
+    Todo,
+    InProgress,
+    Review,
+    Done,
+    Blocked,
+}
+
+/// Map an epic status to its kanban column.
+#[allow(dead_code)]
+pub fn kanban_column(status: EpicStatus) -> KanbanColumn {
+    match status {
+        EpicStatus::Pending => KanbanColumn::Todo,
+        EpicStatus::Running => KanbanColumn::InProgress,
+        EpicStatus::Verifying => KanbanColumn::Review,
+        EpicStatus::Merged => KanbanColumn::Done,
+        EpicStatus::Failed | EpicStatus::Skipped | EpicStatus::Conflict => KanbanColumn::Blocked,
+    }
+}
+
+/// True when any dependency has not yet merged, so a pending epic is on hold.
+#[allow(dead_code)]
+pub fn is_on_hold(depends_on: &[String], status_by_id: &HashMap<String, EpicStatus>) -> bool {
+    depends_on
+        .iter()
+        .any(|dep| status_by_id.get(dep) != Some(&EpicStatus::Merged))
 }
 
 #[derive(Clone)]
@@ -154,5 +188,51 @@ impl App {
             }
             AppEvent::Input(_) | AppEvent::Tick => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn kanban_column_maps_each_status() {
+        assert_eq!(kanban_column(EpicStatus::Pending), KanbanColumn::Todo);
+        assert_eq!(kanban_column(EpicStatus::Running), KanbanColumn::InProgress);
+        assert_eq!(kanban_column(EpicStatus::Verifying), KanbanColumn::Review);
+        assert_eq!(kanban_column(EpicStatus::Merged), KanbanColumn::Done);
+        assert_eq!(kanban_column(EpicStatus::Failed), KanbanColumn::Blocked);
+        assert_eq!(kanban_column(EpicStatus::Skipped), KanbanColumn::Blocked);
+        assert_eq!(kanban_column(EpicStatus::Conflict), KanbanColumn::Blocked);
+    }
+
+    #[test]
+    fn is_on_hold_true_when_a_dependency_is_not_merged() {
+        let mut status_by_id = HashMap::new();
+        status_by_id.insert("a".to_string(), EpicStatus::Running);
+        assert!(is_on_hold(&["a".to_string()], &status_by_id));
+    }
+
+    #[test]
+    fn is_on_hold_false_when_all_dependencies_merged() {
+        let mut status_by_id = HashMap::new();
+        status_by_id.insert("a".to_string(), EpicStatus::Merged);
+        status_by_id.insert("b".to_string(), EpicStatus::Merged);
+        assert!(!is_on_hold(
+            &["a".to_string(), "b".to_string()],
+            &status_by_id
+        ));
+    }
+
+    #[test]
+    fn is_on_hold_true_for_an_unknown_dependency() {
+        let status_by_id = HashMap::new();
+        assert!(is_on_hold(&["ghost".to_string()], &status_by_id));
+    }
+
+    #[test]
+    fn no_dependencies_is_never_on_hold() {
+        let status_by_id = HashMap::new();
+        assert!(!is_on_hold(&[], &status_by_id));
     }
 }
