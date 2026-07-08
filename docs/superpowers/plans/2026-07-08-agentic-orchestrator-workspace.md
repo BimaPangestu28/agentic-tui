@@ -8,6 +8,14 @@
 
 **Tech Stack:** Rust 2021, tokio (async + process), ratatui + crossterm (TUI), serde + serde_json (plan.json), toml (workspaces.toml), dirs (config path), anyhow (errors).
 
+## Green-build invariant
+
+Every task leaves the whole crate compiling and every test passing. New
+config items and prompts are added alongside the old single-stage ones
+(Tasks 1-6); the coupled reshape of `event`/`app`/`engine`/`ui`/`main` and the
+removal of the obsolete single-stage code happen together in one atomic
+switchover (Task 7). No task ever leaves `cargo build` red.
+
 ## Global Constraints
 
 - Edition `2021`; must build on rustc 1.75 (keep `Cargo.lock` pinned; do not run `cargo update`).
@@ -38,7 +46,7 @@
 
 ---
 
-### Task 1: Dependencies and config knobs
+### Task 1: Dependencies and config knobs (additive)
 
 **Files:**
 - Modify: `Cargo.toml`
@@ -46,7 +54,8 @@
 
 **Interfaces:**
 - Consumes: nothing (first task).
-- Produces: constants `PLAN_TOOLS: &str`, `EPIC_TOOLS: &str`, `MODEL_PLAN: &str`, `MODEL_EPIC: &str`, `MAX_PARALLEL_EPICS: usize`, `EPIC_BUDGET_USD: f64`, `GLOBAL_BUDGET_USD: f64`, `DEFAULT_VERIFY_CMD: &str`, `PLAN_MAX_TURNS: u32`, `EPIC_MAX_TURNS: u32`, `PERMISSION_MODE: &str` (kept).
+- Produces (added alongside the existing `BUDGET_USD`, `MODEL_PRD`, `PRD_TOOLS`, `PRD_MAX_TURNS`, `PERMISSION_MODE`, `Stage`, `prd_stage`, `prd_prompt`, `STYLE`, which all stay):
+  `GLOBAL_BUDGET_USD: f64`, `EPIC_BUDGET_USD: f64`, `MODEL_PLAN: &str`, `MODEL_EPIC: &str`, `PLAN_TOOLS: &str`, `EPIC_TOOLS: &str`, `PLAN_MAX_TURNS: u32`, `EPIC_MAX_TURNS: u32`, `MAX_PARALLEL_EPICS: usize`, `DEFAULT_VERIFY_CMD: &str`.
 
 - [ ] **Step 1: Add dependencies to `Cargo.toml`**
 
@@ -66,14 +75,16 @@ anyhow = "1"
 
 - [ ] **Step 2: Run build to fetch new crates**
 
-Run: `cargo build`
+Run: `cargo build 2>&1 | tail -5`
 Expected: PASS (compiles; new crates downloaded).
 
-- [ ] **Step 3: Extend `src/config.rs` with orchestrator knobs**
+- [ ] **Step 3: Append orchestrator knobs to `src/config.rs`**
 
-Replace the existing constants block (lines for `BUDGET_USD`, `MODEL_PRD`, `PRD_TOOLS`, `PRD_MAX_TURNS`, `PERMISSION_MODE`) with:
+Do NOT remove anything. Append at the end of `src/config.rs`:
 
 ```rust
+// --- Orchestrator knobs (single-stage items above are removed in the switchover) ---
+
 // Global cost circuit breaker across every session in a run.
 pub const GLOBAL_BUDGET_USD: f64 = 10.0;
 // Budget for a single stage (plan or one epic).
@@ -89,7 +100,6 @@ pub const EPIC_TOOLS: &str = "Read,Glob,Grep,Edit,Write,Bash,WebSearch,WebFetch,
 
 pub const PLAN_MAX_TURNS: u32 = 20;
 pub const EPIC_MAX_TURNS: u32 = 40;
-pub const PERMISSION_MODE: &str = "acceptEdits";
 
 // How many epics may run in parallel.
 pub const MAX_PARALLEL_EPICS: usize = 3;
@@ -98,12 +108,10 @@ pub const MAX_PARALLEL_EPICS: usize = 3;
 pub const DEFAULT_VERIFY_CMD: &str = "make verify";
 ```
 
-Leave the `Stage`, `prd_stage`, `STYLE`, and `prd_prompt` items in place for now (removed in Task 7 when replaced by plan/epic prompts).
-
 - [ ] **Step 4: Run build**
 
 Run: `cargo build 2>&1 | tail -5`
-Expected: PASS. Warnings about unused constants are acceptable at this stage.
+Expected: PASS. Warnings about unused constants are acceptable.
 
 - [ ] **Step 5: Commit**
 
@@ -131,7 +139,7 @@ git commit -m "feat: add orchestrator dependencies and config knobs"
 
 - [ ] **Step 1: Register the module**
 
-In `src/main.rs`, add `mod workspace;` next to the other `mod` lines (after `mod ui;`).
+In `src/main.rs`, add `mod workspace;` next to the other `mod` lines (after `mod ui;`). Add `#[allow(dead_code)]` above it is not needed; the picker in Task 7 uses it, and unused-warnings are acceptable meanwhile.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -283,7 +291,12 @@ pub fn validate(workspace: &Workspace) -> anyhow::Result<()> {
 Run: `cargo test workspace:: 2>&1 | tail -20`
 Expected: PASS (5 tests).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Confirm the whole crate still builds**
+
+Run: `cargo build 2>&1 | tail -5`
+Expected: PASS (unused-warnings acceptable).
+
+- [ ] **Step 7: Commit**
 
 ```bash
 git add src/workspace.rs src/main.rs
@@ -513,9 +526,9 @@ git commit -m "feat: add plan model with validation and topological order"
 **Interfaces:**
 - Consumes: `plan::Plan` (Task 3).
 - Produces:
-  - `pub enum EpicState { Pending, Running, Succeeded, Failed, Skipped }`
+  - `pub enum EpicState { Pending, Running, Succeeded, Failed, Skipped }` (derives `Clone, Copy, PartialEq, Eq, Debug`)
   - `pub struct Scheduler { .. }`
-  - `impl Scheduler { pub fn new(plan: &Plan, max_parallel: usize) -> Self; pub fn next_ready(&self) -> Vec<String>; pub fn mark_running(&mut self, id: &str); pub fn mark_succeeded(&mut self, id: &str); pub fn mark_failed(&mut self, id: &str); pub fn state(&self, id: &str) -> Option<EpicState>; pub fn running_count(&self) -> usize; pub fn is_done(&self) -> bool }`
+  - `impl Scheduler { pub fn new(plan: &Plan, max_parallel: usize) -> Self; pub fn next_ready(&self) -> Vec<String>; pub fn mark_running(&mut self, id: &str); pub fn mark_succeeded(&mut self, id: &str); pub fn mark_failed(&mut self, id: &str); pub fn state(&self, id: &str) -> Option<EpicState>; pub fn running_count(&self) -> usize; pub fn is_done(&self) -> bool; pub fn snapshot(&self) -> Vec<(String, EpicState)> }`
 
 - [ ] **Step 1: Register the module**
 
@@ -529,7 +542,7 @@ Create `src/orchestrator.rs`:
 //! Epic scheduler. The `Scheduler` is a pure state machine: it decides which
 //! epics may run now (dependencies satisfied, under the parallel cap) and
 //! records outcomes, cascading skips to dependents of failed epics. The async
-//! driver that actually spawns sessions lives in `run` (added later).
+//! driver that actually spawns sessions is added in a later task.
 
 use std::collections::HashMap;
 
@@ -585,7 +598,6 @@ mod tests {
         let mut sched = scheduler(diamond(), 1);
         sched.mark_running("a");
         sched.mark_succeeded("a");
-        // b and c are eligible but the cap is 1 and none are running.
         assert_eq!(sched.next_ready().len(), 1);
     }
 
@@ -612,7 +624,6 @@ mod tests {
 
     #[test]
     fn independent_epics_survive_a_failure() {
-        // a fails, but x has no dependency on a.
         let mut sched = scheduler(
             r#"{"epics":[
                 {"id":"a","title":"a"},
@@ -637,6 +648,16 @@ mod tests {
             sched.mark_succeeded(id);
         }
         assert!(sched.is_done());
+    }
+
+    #[test]
+    fn snapshot_reports_every_epic_state() {
+        let mut sched = scheduler(diamond(), 3);
+        sched.mark_running("a");
+        sched.mark_failed("a");
+        let snap = sched.snapshot();
+        assert_eq!(snap.len(), 4);
+        assert!(snap.iter().any(|(id, s)| id == "a" && *s == EpicState::Failed));
     }
 }
 ```
@@ -725,6 +746,14 @@ impl Scheduler {
         })
     }
 
+    /// A copy of every epic id and its current state.
+    pub fn snapshot(&self) -> Vec<(String, EpicState)> {
+        self.order
+            .iter()
+            .map(|id| (id.clone(), self.states[id]))
+            .collect()
+    }
+
     fn set(&mut self, id: &str, state: EpicState) {
         if let Some(slot) = self.states.get_mut(id) {
             *slot = state;
@@ -763,7 +792,7 @@ impl Scheduler {
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `cargo test orchestrator:: 2>&1 | tail -20`
-Expected: PASS (7 tests).
+Expected: PASS (8 tests).
 
 - [ ] **Step 6: Commit**
 
@@ -774,19 +803,328 @@ git commit -m "feat: add pure epic scheduler state machine"
 
 ---
 
-### Task 5: Event and App state extension
+### Task 5: Worktree management (`worktree.rs`)
 
 **Files:**
-- Modify: `src/event.rs`
-- Modify: `src/app.rs`
+- Create: `src/worktree.rs`
+- Modify: `src/main.rs` (add `mod worktree;`)
 
 **Interfaces:**
-- Consumes: `crossterm::event::KeyEvent`, `orchestrator::EpicState`.
+- Consumes: nothing beyond `std`/`tokio`.
 - Produces:
-  - `AppEvent` variants: `Input(KeyEvent)`, `Tick`, `StageLog { tag: String, line: String }`, `StageAssistant { tag: String, text: String }`, `StageTool { tag: String, name: String }`, `PlanReady { epic_count: usize }`, `EpicStarted { id: String, title: String }`, `EpicVerifying { id: String }`, `EpicSucceeded { id: String, cost: f64 }`, `EpicFailed { id: String, reason: String }`, `EpicSkipped { id: String }`, `EpicMerged { id: String }`, `EpicConflict { id: String }`, `Cost(f64)`, `Fatal(String)`, `Done`.
-  - `App` with `pub phase: Phase` (`Planning`/`Implementing`/`Done`/`Failed`), `pub epics: Vec<EpicView>`, `pub log`, `pub total_cost`, `pub budget`.
-  - `pub struct EpicView { pub id: String, pub title: String, pub status: EpicStatus, pub cost: f64 }`
-  - `pub enum EpicStatus { Pending, Running, Verifying, Merged, Failed, Skipped, Conflict }`
+  - `pub struct EpicWorktree { pub id: String, pub path: PathBuf, pub branch: String }`
+  - `pub enum MergeResult { Merged, Conflict }` (derives `Debug, Clone, PartialEq`)
+  - `pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree>`
+  - `pub async fn remove(repo: &Path, worktree: &EpicWorktree) -> anyhow::Result<()>`
+  - `pub async fn merge_into(repo: &Path, branch: &str, integration_branch: &str) -> anyhow::Result<MergeResult>`
+
+- [ ] **Step 1: Register the module**
+
+In `src/main.rs`, add `mod worktree;`.
+
+- [ ] **Step 2: Write the integration test**
+
+Create `src/worktree.rs`. This test shells out to real `git` against a temp repo, so run it serially:
+
+```rust
+//! Per-epic git worktree lifecycle: create an isolated worktree and branch for
+//! an epic, remove it, and merge a passing epic branch into the integration
+//! branch. Merge conflicts are reported, never auto-resolved.
+
+use std::path::{Path, PathBuf};
+
+use tokio::process::Command;
+
+#[derive(Debug, Clone)]
+pub struct EpicWorktree {
+    pub id: String,
+    pub path: PathBuf,
+    pub branch: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum MergeResult {
+    Merged,
+    Conflict,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    async fn git(repo: &Path, args: &[&str]) {
+        let status = Command::new("git")
+            .args(args)
+            .current_dir(repo)
+            .status()
+            .await
+            .unwrap();
+        assert!(status.success(), "git {:?} failed", args);
+    }
+
+    async fn init_repo(dir: &Path) {
+        git(dir, &["init", "-b", "main"]).await;
+        git(dir, &["config", "user.email", "t@t.t"]).await;
+        git(dir, &["config", "user.name", "t"]).await;
+        tokio::fs::write(dir.join("base.txt"), "base\n").await.unwrap();
+        git(dir, &["add", "-A"]).await;
+        git(dir, &["commit", "-m", "base"]).await;
+    }
+
+    #[tokio::test]
+    async fn create_and_merge_a_clean_epic() {
+        let tmp = std::env::temp_dir().join(format!("wt-clean-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        let wt = create(&tmp, "epic-1").await.unwrap();
+        tokio::fs::write(wt.path.join("feature.txt"), "hi\n").await.unwrap();
+        git(&wt.path, &["add", "-A"]).await;
+        git(&wt.path, &["commit", "-m", "epic-1 work"]).await;
+
+        let result = merge_into(&tmp, &wt.branch, "integration").await.unwrap();
+        assert_eq!(result, MergeResult::Merged);
+        assert!(tmp.join("feature.txt").exists());
+
+        remove(&tmp, &wt).await.unwrap();
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn a_conflicting_epic_is_reported_not_resolved() {
+        let tmp = std::env::temp_dir().join(format!("wt-conflict-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        let wt1 = create(&tmp, "epic-1").await.unwrap();
+        tokio::fs::write(wt1.path.join("base.txt"), "from epic-1\n").await.unwrap();
+        git(&wt1.path, &["commit", "-am", "epic-1"]).await;
+        assert_eq!(merge_into(&tmp, &wt1.branch, "integration").await.unwrap(), MergeResult::Merged);
+
+        let wt2 = create(&tmp, "epic-2").await.unwrap();
+        tokio::fs::write(wt2.path.join("base.txt"), "from epic-2\n").await.unwrap();
+        git(&wt2.path, &["commit", "-am", "epic-2"]).await;
+        assert_eq!(merge_into(&tmp, &wt2.branch, "integration").await.unwrap(), MergeResult::Conflict);
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+}
+```
+
+- [ ] **Step 3: Run tests to verify they fail**
+
+Run: `cargo test worktree:: -- --test-threads=1 2>&1 | tail -20`
+Expected: FAIL to compile ("cannot find function `create`").
+
+- [ ] **Step 4: Write the implementation**
+
+Insert above the `#[cfg(test)]` block:
+
+```rust
+async fn run_git(repo: &Path, args: &[&str]) -> anyhow::Result<std::process::Output> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(repo)
+        .output()
+        .await
+        .map_err(|e| anyhow::anyhow!("failed to run git {:?}: {e}", args))?;
+    Ok(output)
+}
+
+async fn run_git_checked(repo: &Path, args: &[&str]) -> anyhow::Result<()> {
+    let output = run_git(repo, args).await?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "git {:?} failed: {}",
+            args,
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    Ok(())
+}
+
+/// Directory where epic worktrees live, next to the repo.
+fn worktrees_root(repo: &Path) -> PathBuf {
+    repo.join(".agentic-worktrees")
+}
+
+/// Create a worktree and branch for an epic, based off the repo HEAD.
+pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree> {
+    let branch = format!("agentic/{epic_id}");
+    let path = worktrees_root(repo).join(epic_id);
+    let path_str = path.to_string_lossy().to_string();
+    let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
+    let _ = run_git(repo, &["branch", "-D", &branch]).await;
+    run_git_checked(repo, &["worktree", "add", "-b", &branch, &path_str, "HEAD"]).await?;
+    Ok(EpicWorktree { id: epic_id.to_string(), path, branch })
+}
+
+/// Remove an epic worktree and delete its branch.
+pub async fn remove(repo: &Path, worktree: &EpicWorktree) -> anyhow::Result<()> {
+    let path_str = worktree.path.to_string_lossy().to_string();
+    let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
+    let _ = run_git(repo, &["branch", "-D", &worktree.branch]).await;
+    Ok(())
+}
+
+/// Merge an epic branch into the integration branch, creating it from HEAD on
+/// first use. Returns Conflict (and aborts the merge) if it does not apply cleanly.
+pub async fn merge_into(
+    repo: &Path,
+    branch: &str,
+    integration_branch: &str,
+) -> anyhow::Result<MergeResult> {
+    let exists = run_git(repo, &["rev-parse", "--verify", integration_branch])
+        .await?
+        .status
+        .success();
+    if !exists {
+        run_git_checked(repo, &["branch", integration_branch, "HEAD"]).await?;
+    }
+    run_git_checked(repo, &["checkout", integration_branch]).await?;
+    let merge = run_git(repo, &["merge", "--no-edit", branch]).await?;
+    if merge.status.success() {
+        Ok(MergeResult::Merged)
+    } else {
+        let _ = run_git(repo, &["merge", "--abort"]).await;
+        Ok(MergeResult::Conflict)
+    }
+}
+```
+
+- [ ] **Step 5: Run tests to verify they pass**
+
+Run: `cargo test worktree:: -- --test-threads=1 2>&1 | tail -20`
+Expected: PASS (2 tests). Requires `git` on PATH.
+
+- [ ] **Step 6: Confirm the whole crate still builds**
+
+Run: `cargo build 2>&1 | tail -5`
+Expected: PASS.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/worktree.rs src/main.rs
+git commit -m "feat: add per-epic git worktree create, remove, and merge"
+```
+
+---
+
+### Task 6: Plan and epic prompts (additive)
+
+**Files:**
+- Modify: `src/config.rs`
+
+**Interfaces:**
+- Consumes: `crate::plan::Epic` (Task 3), existing `STYLE`.
+- Produces:
+  - `pub fn plan_prompt(goal: &str, out_path: &str) -> String`
+  - `pub fn epic_prompt(goal: &str, epic: &crate::plan::Epic, verify_cmd: &str) -> String`
+
+- [ ] **Step 1: Append `plan_prompt` to `src/config.rs`**
+
+Do not remove `prd_prompt` yet. Append:
+
+```rust
+/// Prompt for the Plan stage. Claude explores the workspace and writes a
+/// machine-readable plan.json (epics with tasks, dependencies, acceptance).
+pub fn plan_prompt(goal: &str, out_path: &str) -> String {
+    format!(
+        "You are a Tech Lead decomposing a goal into an implementation plan for a \
+repository. {style}\n\n\
+GOAL:\n{goal}\n\n\
+Step 1. Understand this repository with Glob and Grep. Detect language, \
+framework, layout, and conventions so the plan fits the real code.\n\
+Step 2. Break the goal into epics. Each epic is a coherent unit one engineer \
+can implement in one session. Split each epic into concrete tasks. Record \
+dependencies between epics with epic ids in depends_on. Keep epics as \
+independent as possible so they can run in parallel.\n\
+Step 3. Write ONLY a JSON file to {out} with this exact shape and nothing else:\n\
+{{\"epics\":[{{\"id\":\"epic-1\",\"title\":\"...\",\"depends_on\":[],\
+\"acceptance\":[\"verifiable item\"],\"tasks\":[{{\"id\":\"epic-1-t1\",\
+\"title\":\"...\",\"detail\":\"...\"}}]}}]}}\n\
+Use short kebab-case ids. Every depends_on entry must be an id that exists. Do \
+not create cycles. Do not write any other file.\n\
+Step 4. After writing, print the number of epics and a one line summary.",
+        style = STYLE,
+        goal = goal,
+        out = out_path,
+    )
+}
+```
+
+- [ ] **Step 2: Append `epic_prompt` to `src/config.rs`**
+
+```rust
+/// Prompt for one epic session. Runs inside that epic's worktree and implements
+/// the epic's tasks, then runs the verification command itself as a check.
+pub fn epic_prompt(goal: &str, epic: &crate::plan::Epic, verify_cmd: &str) -> String {
+    let tasks: String = epic
+        .tasks
+        .iter()
+        .map(|task| format!("- {} ({}): {}\n", task.title, task.id, task.detail))
+        .collect();
+    let acceptance: String = epic
+        .acceptance
+        .iter()
+        .map(|item| format!("- {item}\n"))
+        .collect();
+    format!(
+        "You are implementing one epic of a larger goal, working in an isolated \
+git worktree. {style}\n\n\
+OVERALL GOAL:\n{goal}\n\n\
+THIS EPIC: {title}\n\n\
+TASKS:\n{tasks}\n\
+ACCEPTANCE CRITERIA:\n{acceptance}\n\
+Implement every task with Edit and Write. Follow existing conventions in the \
+repository. When done, run `{verify}` with Bash and fix anything it reports \
+until it passes. Do not stop to ask questions, this run is non-interactive. \
+Commit your work with git when the epic is complete.",
+        style = STYLE,
+        goal = goal,
+        title = epic.title,
+        tasks = tasks,
+        acceptance = acceptance,
+        verify = verify_cmd,
+    )
+}
+```
+
+- [ ] **Step 3: Run build**
+
+Run: `cargo build 2>&1 | tail -10`
+Expected: PASS (crate still compiles; `prd_prompt` and the new prompts coexist).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add src/config.rs
+git commit -m "feat: add plan and epic prompts"
+```
+
+---
+
+### Task 7: Pipeline switchover (event, app, engine, ui, main, orchestrator driver)
+
+This is the atomic reshape from single-stage to multi-stage. It replaces five
+files, adds the orchestrator async driver, and removes the obsolete
+single-stage config items in one commit so the crate never goes red. The code
+for every file is given in full below; this is transcription plus verification.
+
+**Files:**
+- Modify (replace contents): `src/event.rs`, `src/app.rs`, `src/engine.rs`, `src/ui.rs`, `src/main.rs`
+- Modify: `src/orchestrator.rs` (append the driver)
+- Modify: `src/config.rs` (remove obsolete single-stage items)
+
+**Interfaces:**
+- Consumes: `workspace`, `plan`, `orchestrator::Scheduler`, `worktree`, `config` prompts and knobs — all from Tasks 1-6.
+- Produces: the runnable binary. Key new signatures:
+  - `engine::StageSpec<'a> { tag, cwd, model, tools, max_turns, budget_usd, prompt }`, `engine::Outcome { cost, ok }`, `engine::run_stage(&StageSpec, &UnboundedSender<AppEvent>) -> Result<Outcome>`
+  - `orchestrator::RunConfig { repo, goal, verify_cmd, integration_branch }`, `orchestrator::run(&Plan, RunConfig, UnboundedSender<AppEvent>) -> Result<()>`
+  - `app::{App, Phase, EpicStatus, EpicView}`, `ui::{render, render_picker}`
 
 - [ ] **Step 1: Replace `src/event.rs`**
 
@@ -986,33 +1324,7 @@ impl App {
 }
 ```
 
-- [ ] **Step 3: Run build**
-
-Run: `cargo build 2>&1 | tail -20`
-Expected: FAIL — `ui.rs` and `main.rs` still reference the old `App`/`AppEvent` shape. This is expected; Tasks 6-11 update them. Confirm the errors are only in `ui.rs` and `main.rs`, not in `event.rs` or `app.rs`.
-
-- [ ] **Step 4: Commit**
-
-```bash
-git add src/event.rs src/app.rs
-git commit -m "feat: extend events and app state for multi-epic runs"
-```
-
----
-
-### Task 6: Engine refactor to a generic stage runner
-
-**Files:**
-- Modify: `src/engine.rs`
-
-**Interfaces:**
-- Consumes: `AppEvent::{StageLog,StageAssistant,StageTool}` (Task 5), `config::PERMISSION_MODE`.
-- Produces:
-  - `pub struct StageSpec<'a> { pub tag: &'a str, pub cwd: &'a Path, pub model: &'a str, pub tools: &'a str, pub max_turns: u32, pub budget_usd: f64, pub prompt: &'a str }`
-  - `pub struct Outcome { pub cost: f64, pub ok: bool }`
-  - `pub async fn run_stage(spec: &StageSpec<'_>, tx: &UnboundedSender<AppEvent>) -> anyhow::Result<Outcome>`
-
-- [ ] **Step 1: Replace `src/engine.rs`**
+- [ ] **Step 3: Replace `src/engine.rs`**
 
 ```rust
 //! Engine: drives Claude Code headless (`claude -p`) as a subprocess, reads the
@@ -1154,345 +1466,9 @@ pub async fn run_stage(
 }
 ```
 
-- [ ] **Step 2: Run build**
+- [ ] **Step 4: Append the orchestrator driver to `src/orchestrator.rs`**
 
-Run: `cargo build 2>&1 | tail -20`
-Expected: FAIL only in `ui.rs`/`main.rs` (still old shape). `engine.rs`, `app.rs`, `event.rs` compile.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/engine.rs
-git commit -m "refactor: make run_stage a generic tagged stage runner"
-```
-
----
-
-### Task 7: Worktree management (`worktree.rs`)
-
-**Files:**
-- Create: `src/worktree.rs`
-- Modify: `src/main.rs` (add `mod worktree;`)
-
-**Interfaces:**
-- Consumes: nothing beyond `std`/`tokio`.
-- Produces:
-  - `pub struct EpicWorktree { pub id: String, pub path: PathBuf, pub branch: String }`
-  - `pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree>`
-  - `pub async fn remove(repo: &Path, worktree: &EpicWorktree) -> anyhow::Result<()>`
-  - `pub async fn merge_into(repo: &Path, branch: &str, integration_branch: &str) -> anyhow::Result<MergeResult>`
-  - `pub enum MergeResult { Merged, Conflict }`
-
-- [ ] **Step 1: Register the module**
-
-In `src/main.rs`, add `mod worktree;`.
-
-- [ ] **Step 2: Write the integration test**
-
-Create `src/worktree.rs`. This test shells out to real `git` against a temp repo, so it is an integration test guarded to run serially:
-
-```rust
-//! Per-epic git worktree lifecycle: create an isolated worktree and branch for
-//! an epic, remove it, and merge a passing epic branch into the integration
-//! branch. Merge conflicts are reported, never auto-resolved.
-
-use std::path::{Path, PathBuf};
-
-use tokio::process::Command;
-
-#[derive(Debug, Clone)]
-pub struct EpicWorktree {
-    pub id: String,
-    pub path: PathBuf,
-    pub branch: String,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum MergeResult {
-    Merged,
-    Conflict,
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    async fn git(repo: &Path, args: &[&str]) {
-        let status = Command::new("git")
-            .args(args)
-            .current_dir(repo)
-            .status()
-            .await
-            .unwrap();
-        assert!(status.success(), "git {:?} failed", args);
-    }
-
-    async fn init_repo(dir: &Path) {
-        git(dir, &["init", "-b", "main"]).await;
-        git(dir, &["config", "user.email", "t@t.t"]).await;
-        git(dir, &["config", "user.name", "t"]).await;
-        tokio::fs::write(dir.join("base.txt"), "base\n").await.unwrap();
-        git(dir, &["add", "-A"]).await;
-        git(dir, &["commit", "-m", "base"]).await;
-    }
-
-    #[tokio::test]
-    async fn create_and_merge_a_clean_epic() {
-        let tmp = std::env::temp_dir().join(format!("wt-clean-{}", std::process::id()));
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-        tokio::fs::create_dir_all(&tmp).await.unwrap();
-        init_repo(&tmp).await;
-
-        let wt = create(&tmp, "epic-1").await.unwrap();
-        tokio::fs::write(wt.path.join("feature.txt"), "hi\n").await.unwrap();
-        git(&wt.path, &["add", "-A"]).await;
-        git(&wt.path, &["commit", "-m", "epic-1 work"]).await;
-
-        let result = merge_into(&tmp, &wt.branch, "integration").await.unwrap();
-        assert_eq!(result, MergeResult::Merged);
-        assert!(tmp.join("feature.txt").exists());
-
-        remove(&tmp, &wt).await.unwrap();
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-    }
-
-    #[tokio::test]
-    async fn a_conflicting_epic_is_reported_not_resolved() {
-        let tmp = std::env::temp_dir().join(format!("wt-conflict-{}", std::process::id()));
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-        tokio::fs::create_dir_all(&tmp).await.unwrap();
-        init_repo(&tmp).await;
-
-        // First epic edits base.txt and merges cleanly.
-        let wt1 = create(&tmp, "epic-1").await.unwrap();
-        tokio::fs::write(wt1.path.join("base.txt"), "from epic-1\n").await.unwrap();
-        git(&wt1.path, &["commit", "-am", "epic-1"]).await;
-        assert_eq!(merge_into(&tmp, &wt1.branch, "integration").await.unwrap(), MergeResult::Merged);
-
-        // Second epic edits the same line from the original base and conflicts.
-        let wt2 = create(&tmp, "epic-2").await.unwrap();
-        tokio::fs::write(wt2.path.join("base.txt"), "from epic-2\n").await.unwrap();
-        git(&wt2.path, &["commit", "-am", "epic-2"]).await;
-        assert_eq!(merge_into(&tmp, &wt2.branch, "integration").await.unwrap(), MergeResult::Conflict);
-
-        let _ = tokio::fs::remove_dir_all(&tmp).await;
-    }
-}
-```
-
-- [ ] **Step 3: Run tests to verify they fail**
-
-Run: `cargo test worktree:: -- --test-threads=1 2>&1 | tail -20`
-Expected: FAIL to compile ("cannot find function `create`").
-
-- [ ] **Step 4: Write the implementation**
-
-Insert above the `#[cfg(test)]` block:
-
-```rust
-use tokio::process::Command as ChildCommand;
-
-async fn run_git(repo: &Path, args: &[&str]) -> anyhow::Result<std::process::Output> {
-    let output = ChildCommand::new("git")
-        .args(args)
-        .current_dir(repo)
-        .output()
-        .await
-        .map_err(|e| anyhow::anyhow!("failed to run git {:?}: {e}", args))?;
-    Ok(output)
-}
-
-async fn run_git_checked(repo: &Path, args: &[&str]) -> anyhow::Result<()> {
-    let output = run_git(repo, args).await?;
-    if !output.status.success() {
-        anyhow::bail!(
-            "git {:?} failed: {}",
-            args,
-            String::from_utf8_lossy(&output.stderr).trim()
-        );
-    }
-    Ok(())
-}
-
-/// Directory where epic worktrees live, next to the repo.
-fn worktrees_root(repo: &Path) -> PathBuf {
-    repo.join(".agentic-worktrees")
-}
-
-/// Create a worktree and branch for an epic, based off the repo HEAD.
-pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree> {
-    let branch = format!("agentic/{epic_id}");
-    let path = worktrees_root(repo).join(epic_id);
-    let path_str = path.to_string_lossy().to_string();
-    // Remove any stale worktree at that path first.
-    let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
-    let _ = run_git(repo, &["branch", "-D", &branch]).await;
-    run_git_checked(repo, &["worktree", "add", "-b", &branch, &path_str, "HEAD"]).await?;
-    Ok(EpicWorktree { id: epic_id.to_string(), path, branch })
-}
-
-/// Remove an epic worktree and delete its branch.
-pub async fn remove(repo: &Path, worktree: &EpicWorktree) -> anyhow::Result<()> {
-    let path_str = worktree.path.to_string_lossy().to_string();
-    let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
-    let _ = run_git(repo, &["branch", "-D", &worktree.branch]).await;
-    Ok(())
-}
-
-/// Merge an epic branch into the integration branch, creating it from HEAD on
-/// first use. Returns Conflict (and aborts the merge) if it does not apply cleanly.
-pub async fn merge_into(
-    repo: &Path,
-    branch: &str,
-    integration_branch: &str,
-) -> anyhow::Result<MergeResult> {
-    // Create the integration branch from current HEAD if it does not exist.
-    let exists = run_git(repo, &["rev-parse", "--verify", integration_branch])
-        .await?
-        .status
-        .success();
-    if !exists {
-        run_git_checked(repo, &["branch", integration_branch, "HEAD"]).await?;
-    }
-    run_git_checked(repo, &["checkout", integration_branch]).await?;
-    let merge = run_git(repo, &["merge", "--no-edit", branch]).await?;
-    if merge.status.success() {
-        Ok(MergeResult::Merged)
-    } else {
-        let _ = run_git(repo, &["merge", "--abort"]).await;
-        Ok(MergeResult::Conflict)
-    }
-}
-```
-
-- [ ] **Step 5: Run tests to verify they pass**
-
-Run: `cargo test worktree:: -- --test-threads=1 2>&1 | tail -20`
-Expected: PASS (2 tests). Requires `git` on PATH.
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/worktree.rs src/main.rs
-git commit -m "feat: add per-epic git worktree create, remove, and merge"
-```
-
----
-
-### Task 8: Plan and epic prompts
-
-**Files:**
-- Modify: `src/config.rs`
-
-**Interfaces:**
-- Consumes: nothing.
-- Produces:
-  - `pub fn plan_prompt(goal: &str, out_path: &str) -> String`
-  - `pub fn epic_prompt(goal: &str, epic: &crate::plan::Epic, verify_cmd: &str) -> String`
-
-- [ ] **Step 1: Remove the obsolete PRD items**
-
-In `src/config.rs`, delete the `Stage` struct, `prd_stage`, and `prd_prompt` function. Keep `STYLE`.
-
-- [ ] **Step 2: Add `plan_prompt`**
-
-Append to `src/config.rs`:
-
-```rust
-/// Prompt for the Plan stage. Claude explores the workspace and writes a
-/// machine-readable plan.json (epics with tasks, dependencies, acceptance).
-pub fn plan_prompt(goal: &str, out_path: &str) -> String {
-    format!(
-        "You are a Tech Lead decomposing a goal into an implementation plan for a \
-repository. {style}\n\n\
-GOAL:\n{goal}\n\n\
-Step 1. Understand this repository with Glob and Grep. Detect language, \
-framework, layout, and conventions so the plan fits the real code.\n\
-Step 2. Break the goal into epics. Each epic is a coherent unit one engineer \
-can implement in one session. Split each epic into concrete tasks. Record \
-dependencies between epics with epic ids in depends_on. Keep epics as \
-independent as possible so they can run in parallel.\n\
-Step 3. Write ONLY a JSON file to {out} with this exact shape and nothing else:\n\
-{{\"epics\":[{{\"id\":\"epic-1\",\"title\":\"...\",\"depends_on\":[],\
-\"acceptance\":[\"verifiable item\"],\"tasks\":[{{\"id\":\"epic-1-t1\",\
-\"title\":\"...\",\"detail\":\"...\"}}]}}]}}\n\
-Use short kebab-case ids. Every depends_on entry must be an id that exists. Do \
-not create cycles. Do not write any other file.\n\
-Step 4. After writing, print the number of epics and a one line summary.",
-        style = STYLE,
-        goal = goal,
-        out = out_path,
-    )
-}
-```
-
-- [ ] **Step 3: Add `epic_prompt`**
-
-Append to `src/config.rs`:
-
-```rust
-/// Prompt for one epic session. Runs inside that epic's worktree and implements
-/// the epic's tasks, then runs the verification command itself as a check.
-pub fn epic_prompt(goal: &str, epic: &crate::plan::Epic, verify_cmd: &str) -> String {
-    let tasks: String = epic
-        .tasks
-        .iter()
-        .map(|task| format!("- {} ({}): {}\n", task.title, task.id, task.detail))
-        .collect();
-    let acceptance: String = epic
-        .acceptance
-        .iter()
-        .map(|item| format!("- {item}\n"))
-        .collect();
-    format!(
-        "You are implementing one epic of a larger goal, working in an isolated \
-git worktree. {style}\n\n\
-OVERALL GOAL:\n{goal}\n\n\
-THIS EPIC: {title}\n\n\
-TASKS:\n{tasks}\n\
-ACCEPTANCE CRITERIA:\n{acceptance}\n\
-Implement every task with Edit and Write. Follow existing conventions in the \
-repository. When done, run `{verify}` with Bash and fix anything it reports \
-until it passes. Do not stop to ask questions, this run is non-interactive. \
-Commit your work with git when the epic is complete.",
-        style = STYLE,
-        goal = goal,
-        title = epic.title,
-        tasks = tasks,
-        acceptance = acceptance,
-        verify = verify_cmd,
-    )
-}
-```
-
-- [ ] **Step 4: Run build**
-
-Run: `cargo build 2>&1 | tail -20`
-Expected: FAIL only in `ui.rs`/`main.rs`. `config.rs` compiles (it now references `crate::plan::Epic`, which exists from Task 3).
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add src/config.rs
-git commit -m "feat: add plan and epic prompts"
-```
-
----
-
-### Task 9: Orchestrator async driver
-
-**Files:**
-- Modify: `src/orchestrator.rs`
-
-**Interfaces:**
-- Consumes: `Scheduler` (Task 4), `plan::Plan` (Task 3), `engine::{run_stage,StageSpec}` (Task 6), `worktree` (Task 7), `config`, `AppEvent` (Task 5).
-- Produces:
-  - `pub struct RunConfig { pub repo: PathBuf, pub goal: String, pub verify_cmd: String, pub integration_branch: String }`
-  - `pub async fn run(plan: &Plan, config: RunConfig, tx: UnboundedSender<AppEvent>) -> anyhow::Result<()>`
-
-- [ ] **Step 1: Add imports and `RunConfig`**
-
-At the top of `src/orchestrator.rs`, extend imports and add the config struct (place after the existing `use` and `EpicState`):
+Add these imports at the top of `src/orchestrator.rs` (below the existing `use` lines):
 
 ```rust
 use std::path::PathBuf;
@@ -1505,22 +1481,20 @@ use tokio::sync::Mutex;
 use crate::config;
 use crate::engine::{self, StageSpec};
 use crate::event::AppEvent;
-use crate::plan::{Epic, Plan};
+use crate::plan::Epic;
 use crate::worktree::{self, MergeResult};
+```
 
+Then append (after the `impl Scheduler` block, before the `#[cfg(test)]` module):
+
+```rust
 pub struct RunConfig {
     pub repo: PathBuf,
     pub goal: String,
     pub verify_cmd: String,
     pub integration_branch: String,
 }
-```
 
-- [ ] **Step 2: Add the epic runner helper**
-
-Add this free function to `src/orchestrator.rs`. It runs one epic end to end: worktree, session, verify, and returns whether it passed.
-
-```rust
 /// Run `verify_cmd` inside a worktree. Returns true on exit code 0.
 async fn run_verify(worktree_path: &std::path::Path, verify_cmd: &str) -> bool {
     let status = Command::new("sh")
@@ -1542,14 +1516,14 @@ async fn run_epic(
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
     for attempt in 0..2 {
         let wt = worktree::create(&config.repo, &epic.id).await?;
-        let prompt = config::epic_prompt(&config.goal, epic, &config.verify_cmd);
+        let prompt = crate::config::epic_prompt(&config.goal, epic, &config.verify_cmd);
         let spec = StageSpec {
             tag: &epic.id,
             cwd: &wt.path,
-            model: config::MODEL_EPIC,
-            tools: config::EPIC_TOOLS,
-            max_turns: config::EPIC_MAX_TURNS,
-            budget_usd: config::EPIC_BUDGET_USD,
+            model: crate::config::MODEL_EPIC,
+            tools: crate::config::EPIC_TOOLS,
+            max_turns: crate::config::EPIC_MAX_TURNS,
+            budget_usd: crate::config::EPIC_BUDGET_USD,
             prompt: &prompt,
         };
         let outcome = engine::run_stage(&spec, tx).await?;
@@ -1562,7 +1536,6 @@ async fn run_epic(
             });
             return Ok(Some(wt));
         }
-        // Failed: discard this worktree before a retry or final failure.
         let _ = worktree::remove(&config.repo, &wt).await;
         if attempt == 0 {
             let _ = tx.send(AppEvent::StageLog {
@@ -1573,13 +1546,7 @@ async fn run_epic(
     }
     Ok(None)
 }
-```
 
-- [ ] **Step 3: Add the `run` driver**
-
-Add to `src/orchestrator.rs`:
-
-```rust
 /// Drive the whole Implement + Integrate flow. Schedules epics respecting
 /// dependencies and the parallel cap, verifies each, and merges passing epics
 /// into the integration branch in the order they finish.
@@ -1588,17 +1555,14 @@ pub async fn run(
     config: RunConfig,
     tx: UnboundedSender<AppEvent>,
 ) -> anyhow::Result<()> {
-    let epics_by_id: std::collections::HashMap<String, Epic> = plan
+    let epics_by_id: HashMap<String, Epic> = plan
         .epics
         .iter()
         .map(|e| (e.id.clone(), e.clone()))
         .collect();
     let scheduler = Arc::new(Mutex::new(Scheduler::new(plan, config::MAX_PARALLEL_EPICS)));
     let config = Arc::new(config);
-
-    // Serialize merges so the integration branch is touched by one epic at a time.
     let merge_lock = Arc::new(Mutex::new(()));
-
     let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     loop {
@@ -1611,11 +1575,9 @@ pub async fn run(
         };
 
         if ready.is_empty() {
-            // Nothing runnable right now: wait for an in-flight epic to finish.
             if let Some(handle) = handles.pop() {
                 let _ = handle.await;
             } else {
-                // No ready epics and nothing running: remaining are blocked. Done.
                 break;
             }
             continue;
@@ -1638,14 +1600,15 @@ pub async fn run(
             handles.push(tokio::spawn(async move {
                 match run_epic(&epic, &config, &tx).await {
                     Ok(Some(wt)) => {
-                        let _guard = merge_lock.lock().await;
-                        let merged = worktree::merge_into(
-                            &config.repo,
-                            &wt.branch,
-                            &config.integration_branch,
-                        )
-                        .await;
-                        drop(_guard);
+                        let merged = {
+                            let _guard = merge_lock.lock().await;
+                            worktree::merge_into(
+                                &config.repo,
+                                &wt.branch,
+                                &config.integration_branch,
+                            )
+                            .await
+                        };
                         match merged {
                             Ok(MergeResult::Merged) => {
                                 let _ = tx.send(AppEvent::EpicMerged { id: epic.id.clone() });
@@ -1685,7 +1648,6 @@ pub async fn run(
                         sched.mark_failed(&epic.id);
                     }
                 }
-                // Emit skip events for anything the failure cascaded.
                 let sched = scheduler.lock().await;
                 for (eid, state) in sched.snapshot() {
                     if state == EpicState::Skipped {
@@ -1704,49 +1666,9 @@ pub async fn run(
 }
 ```
 
-- [ ] **Step 4: Add the `snapshot` helper used by the driver**
+Note: `HashMap` is already imported at the top of the file from Task 4.
 
-Add this method inside `impl Scheduler`:
-
-```rust
-    /// A copy of every epic id and its current state.
-    pub fn snapshot(&self) -> Vec<(String, EpicState)> {
-        self.order
-            .iter()
-            .map(|id| (id.clone(), self.states[id]))
-            .collect()
-    }
-```
-
-- [ ] **Step 5: Run build and existing tests**
-
-Run: `cargo build 2>&1 | tail -20`
-Expected: FAIL only in `ui.rs`/`main.rs`. `orchestrator.rs` compiles.
-
-Run: `cargo test orchestrator:: 2>&1 | tail -10`
-Expected: PASS (still 7 scheduler tests; driver is covered by the manual end-to-end run in Task 12).
-
-- [ ] **Step 6: Commit**
-
-```bash
-git add src/orchestrator.rs
-git commit -m "feat: add orchestrator driver for parallel epic execution"
-```
-
----
-
-### Task 10: UI (picker, multi-epic progress, report)
-
-**Files:**
-- Modify: `src/ui.rs`
-
-**Interfaces:**
-- Consumes: `App`, `Phase`, `EpicView`, `EpicStatus` (Task 5).
-- Produces:
-  - `pub fn render(f: &mut Frame, app: &App)`
-  - `pub fn render_picker(f: &mut Frame, workspaces: &[crate::workspace::Workspace], selected: usize)`
-
-- [ ] **Step 1: Replace `src/ui.rs`**
+- [ ] **Step 5: Replace `src/ui.rs`**
 
 ```rust
 //! TUI rendering: a workspace picker screen, then the run view (header, epic
@@ -1797,10 +1719,10 @@ pub fn render(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(4), // header
-            Constraint::Length(app.epics.len().min(8) as u16 + 2), // epics
-            Constraint::Min(1),    // log
-            Constraint::Length(1), // footer
+            Constraint::Length(4),
+            Constraint::Length(app.epics.len().min(8) as u16 + 2),
+            Constraint::Min(1),
+            Constraint::Length(1),
         ])
         .split(area);
 
@@ -1919,30 +1841,7 @@ fn truncate(s: &str, max: usize) -> String {
 }
 ```
 
-- [ ] **Step 2: Run build**
-
-Run: `cargo build 2>&1 | tail -20`
-Expected: FAIL only in `main.rs`. `ui.rs` compiles.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add src/ui.rs
-git commit -m "feat: add workspace picker and multi-epic progress rendering"
-```
-
----
-
-### Task 11: main.rs wiring (args, picker loop, stage sequencing, abort)
-
-**Files:**
-- Modify: `src/main.rs`
-
-**Interfaces:**
-- Consumes: everything above.
-- Produces: the runnable binary.
-
-- [ ] **Step 1: Replace `src/main.rs`**
+- [ ] **Step 6: Replace `src/main.rs`**
 
 ```rust
 //! Agentic orchestrator TUI. Picks a workspace, plans a goal into epics, then
@@ -1964,7 +1863,6 @@ mod ui;
 mod workspace;
 
 use std::io::stdout;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use crossterm::{
@@ -2020,16 +1918,15 @@ fn resolve_workspace(
     workspaces: &[Workspace],
 ) -> anyhow::Result<Option<Workspace>> {
     if let Some(wanted) = &args.workspace {
-        // Match by registered name first, then treat it as a direct path.
         if let Some(found) = workspaces.iter().find(|w| &w.name == wanted) {
             return Ok(Some(found.clone()));
         }
         let path = workspace::expand_tilde(wanted);
-        let direct = Workspace {
-            name: path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "workspace".to_string()),
-            path,
-        };
-        return Ok(Some(direct));
+        let name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| "workspace".to_string());
+        return Ok(Some(Workspace { name, path }));
     }
     run_picker(workspaces)
 }
@@ -2092,15 +1989,10 @@ async fn main() -> anyhow::Result<()> {
     let repo = selected.path.canonicalize().unwrap_or(selected.path.clone());
     let verify_cmd = args.verify.clone().unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
 
-    let mut app = App::new(
-        args.goal.clone(),
-        selected.name.clone(),
-        config::GLOBAL_BUDGET_USD,
-    );
+    let mut app = App::new(args.goal.clone(), selected.name.clone(), config::GLOBAL_BUDGET_USD);
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
-    // Input thread.
     let input_tx = tx.clone();
     std::thread::spawn(move || loop {
         match crossterm::event::read() {
@@ -2114,7 +2006,6 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Tick task.
     let tick_tx = tx.clone();
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(Duration::from_millis(200));
@@ -2126,7 +2017,6 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Pipeline task: plan, then orchestrate.
     let pipeline_tx = tx.clone();
     let repo_run = repo.clone();
     let goal_run = args.goal.clone();
@@ -2137,14 +2027,12 @@ async fn main() -> anyhow::Result<()> {
         }
     });
 
-    // Terminal setup.
     enable_raw_mode()?;
     let mut out = stdout();
     execute!(out, EnterAlternateScreen)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    // Event loop.
     loop {
         terminal.draw(|f| ui::render(f, &app))?;
         match rx.recv().await {
@@ -2155,10 +2043,9 @@ async fn main() -> anyhow::Result<()> {
             },
             Some(AppEvent::Tick) => app.tick(),
             Some(other) => {
-                let done = matches!(other, AppEvent::Done) || matches!(other, AppEvent::Fatal(_));
+                let done = matches!(other, AppEvent::Done | AppEvent::Fatal(_));
                 app.apply(other);
                 if done {
-                    // Draw the final frame, then leave the loop shortly after.
                     terminal.draw(|f| ui::render(f, &app))?;
                 }
             }
@@ -2166,12 +2053,10 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    // Restore.
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
 
-    // Final report.
     print_report(&app, &repo);
     Ok(())
 }
@@ -2183,7 +2068,6 @@ async fn run_pipeline(
     verify_cmd: &str,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> anyhow::Result<()> {
-    // Plan stage: write plan.json into a scratch path inside the repo.
     let plan_path = repo.join(".agentic-plan.json");
     let plan_path_str = plan_path.to_string_lossy().to_string();
     let prompt = config::plan_prompt(goal, &plan_path_str);
@@ -2244,30 +2128,33 @@ fn print_report(app: &App, repo: &std::path::Path) {
         }
         _ => {}
     }
-    let _ = PathBuf::from(".agentic-plan.json");
 }
 ```
 
-- [ ] **Step 2: Run build**
+- [ ] **Step 7: Remove obsolete single-stage items from `src/config.rs`**
+
+Delete these now-unused items: `BUDGET_USD`, `MODEL_PRD`, `PRD_TOOLS`, `PRD_MAX_TURNS`, the `Stage` struct, `prd_stage`, and `prd_prompt`. Keep `PERMISSION_MODE`, `STYLE`, all orchestrator knobs, `plan_prompt`, and `epic_prompt`.
+
+- [ ] **Step 8: Build the whole crate**
 
 Run: `cargo build 2>&1 | tail -20`
-Expected: PASS. The whole crate compiles.
+Expected: PASS. If clippy-style unused warnings remain, they are acceptable; hard errors are not.
 
-- [ ] **Step 3: Run the full test suite**
+- [ ] **Step 9: Run the full test suite**
 
 Run: `cargo test -- --test-threads=1 2>&1 | tail -20`
-Expected: PASS (workspace, plan, orchestrator, worktree tests).
+Expected: PASS (workspace 5, plan 6, orchestrator 8, worktree 2).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add src/main.rs
-git commit -m "feat: wire picker, plan stage, and orchestrator into main"
+git add src/event.rs src/app.rs src/engine.rs src/orchestrator.rs src/ui.rs src/main.rs src/config.rs
+git commit -m "feat: switch pipeline to multi-stage orchestrator"
 ```
 
 ---
 
-### Task 12: Docs, Makefile, and end-to-end verification
+### Task 8: Docs, Makefile, gitignore, and end-to-end verification
 
 **Files:**
 - Modify: `README.md`
@@ -2288,9 +2175,9 @@ Append to `.gitignore`:
 /.agentic-worktrees/
 ```
 
-- [ ] **Step 2: Update `Makefile` run target**
+- [ ] **Step 2: Update the `Makefile` run target**
 
-Replace the `run` target in `Makefile` with:
+Replace the `run` target and its `GOAL` variable near the top with:
 
 ```makefile
 GOAL ?= Add a health check endpoint
@@ -2301,38 +2188,41 @@ run: ## Run the orchestrator (GOAL="..." WORKSPACE=name|path)
 	$(CARGO) run -- "$(GOAL)" $(if $(WORKSPACE),--workspace "$(WORKSPACE)",)
 ```
 
+Leave every other target (`build`, `release`, `check`, `fmt`, `fmt-check`, `lint`, `test`, `verify`, `clean`, `help`) unchanged.
+
 - [ ] **Step 3: Rewrite `README.md`**
 
-Replace the body of `README.md` with content describing the new flow: workspace picker, `workspaces.toml` format, the three stages (Plan, Implement, Integrate), worktree isolation, verification via `VERIFY_CMD`, the config knobs in `src/config.rs`, and the `agentic-integration` output branch. Keep the prerequisites section (Claude Code CLI, subscription login, git, Rust toolchain). Use the same direct, no-em-dash style.
+Replace the body with content describing the new flow: workspace picker, the `workspaces.toml` format, the three stages (Plan, Implement, Integrate), worktree isolation, verification via `VERIFY_CMD`, the config knobs in `src/config.rs`, and the `agentic-integration` output branch. Keep the prerequisites section (Claude Code CLI, subscription login, git, Rust toolchain). Use the direct, no-em-dash style. Include this sample the reader can copy into their config:
 
-- [ ] **Step 4: Create a sample `workspaces.toml` for the reader**
-
-Show this snippet in the README (do not write it to the user's real config):
-
+````markdown
 ```toml
+# ~/.config/agentic-tui/workspaces.toml
 [[workspace]]
 name = "greentic"
 path = "~/Works/personal/greentic"
 ```
+````
 
-- [ ] **Step 5: Run formatting, lint, and tests**
+- [ ] **Step 4: Run formatting, lint, and tests**
 
 Run: `make verify 2>&1 | tail -20`
-Expected: PASS (fmt-check, clippy with `-D warnings`, tests). Fix any clippy findings inline.
+Expected: PASS (fmt-check, clippy with `-D warnings`, tests). Fix any clippy findings inline, then re-run until clean.
 
-- [ ] **Step 6: End-to-end smoke test against a throwaway git repo**
+- [ ] **Step 5: End-to-end smoke test against a throwaway git repo**
 
-Run these commands, then confirm the picker appears, a plan is produced, at least one epic runs in a worktree, and the report prints:
+Run:
 
 ```bash
-mkdir -p /tmp/agentic-smoke && cd /tmp/agentic-smoke && git init -b main && echo "# smoke" > README.md && git add -A && git commit -m init
+mkdir -p /tmp/agentic-smoke && cd /tmp/agentic-smoke && git init -b main && printf '# smoke\n' > README.md && git add -A && git commit -m init
 cd /Users/bimapangestu/Desktop/Works/personal/claude-agentic-loop
 cargo run -- "Add a CONTRIBUTING.md with a short contribution guide" --workspace /tmp/agentic-smoke --verify "true"
 ```
 
-Expected: the run completes; `/tmp/agentic-smoke` has an `agentic-integration` branch containing the new file. (`--verify "true"` makes verification always pass for the smoke test.)
+Expected: the picker is skipped (explicit `--workspace`), a plan is produced, at least one epic runs in a worktree, and the report prints. Confirm `/tmp/agentic-smoke` has an `agentic-integration` branch (`git -C /tmp/agentic-smoke branch`). `--verify "true"` makes verification always pass for the smoke test.
 
-- [ ] **Step 7: Commit**
+If `claude` is not on PATH in this environment, record that the smoke test could not run and note it for the human, rather than marking it passed.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add README.md Makefile .gitignore
@@ -2344,28 +2234,30 @@ git commit -m "docs: update README and Makefile for the orchestrator flow"
 ## Self-Review
 
 **Spec coverage:**
-- Workspace picker + `workspaces.toml` + `--workspace` — Tasks 2, 10, 11. ✓
-- Plan stage writing `plan.json` + schema — Tasks 8, 11. ✓
+- Workspace picker + `workspaces.toml` + `--workspace` — Tasks 2, 7. ✓
+- Plan stage writing `plan.json` + schema — Tasks 6, 7. ✓
 - plan.json parsing + validation + topology — Task 3. ✓
 - Scheduler (deps, parallel cap, failure cascade, independent continuation) — Task 4. ✓
-- Engine generic `run_stage` (cwd + tools) — Task 6. ✓
-- Worktree per epic + merge + conflict detection — Task 7. ✓
-- Orchestrator driver (parallel pool, retry, verify gate, ordered merge) — Task 9. ✓
-- Verification via `VERIFY_CMD` in worktree — Task 9 (`run_verify`), Task 11 (`--verify`). ✓
-- Failure policy (failed not merged, dependents skipped, independents continue, report) — Tasks 4, 9, 11. ✓
-- Autonomous + abort (`q` / Ctrl-C) — Task 11. ✓
-- Config knobs + tool allowlists + new deps — Tasks 1, 8. ✓
-- Error handling (missing config, non-git workspace, missing/invalid plan) — Tasks 2, 11. ✓
-- README + Makefile — Task 12. ✓
+- Engine generic `run_stage` (cwd + tools) — Task 7. ✓
+- Worktree per epic + merge + conflict detection — Task 5. ✓
+- Orchestrator driver (parallel pool, retry, verify gate, ordered merge) — Task 7. ✓
+- Verification via `VERIFY_CMD` in worktree — Tasks 7 (`run_verify`), 7/8 (`--verify`). ✓
+- Failure policy (failed not merged, dependents skipped, independents continue, report) — Tasks 4, 7. ✓
+- Autonomous + abort (`q` / Ctrl-C) — Task 7. ✓
+- Config knobs + tool allowlists + new deps — Tasks 1, 6. ✓
+- Error handling (missing config, non-git workspace, missing/invalid plan) — Tasks 2, 7. ✓
+- README + Makefile — Task 8. ✓
 
-**Placeholder scan:** README rewrite in Task 12 Step 3 is described rather than shown verbatim; this is documentation prose, not code, and the section list is explicit. All code steps contain complete code.
+**Green-build invariant:** Tasks 1-6 only add items; the old single-stage code keeps compiling. Task 7 replaces the coupled files and removes the obsolete config items in one commit. Every task ends with a passing `cargo build` (Tasks 1, 2, 5, 6, 7) or module tests plus build.
 
-**Type consistency:** `StageSpec` fields (`tag`, `cwd`, `model`, `tools`, `max_turns`, `budget_usd`, `prompt`) are used identically in Tasks 6, 9, and 11. `EpicState` (orchestrator) and `EpicStatus` (app) are deliberately distinct types: `EpicState` is scheduler-internal; `EpicStatus` is the UI view, driven by `AppEvent`s. `AppEvent` variants match between `event.rs` (Task 5), `app.rs` (Task 5), `engine.rs` (Task 6), and `orchestrator.rs` (Task 9). `Scheduler` methods (`next_ready`, `mark_running`, `mark_succeeded`, `mark_failed`, `snapshot`, `is_done`) are consistent between Tasks 4 and 9.
+**Placeholder scan:** README rewrite (Task 8 Step 3) is described prose with an explicit section list and a concrete sample, not code — acceptable. All code steps contain complete code.
+
+**Type consistency:** `StageSpec` fields are identical in engine (Task 7 Step 3), the driver (Task 7 Step 4), and `run_pipeline` (Task 7 Step 6). `EpicState` (scheduler-internal) and `EpicStatus` (UI view) are deliberately distinct. `AppEvent` variants match across `event.rs`, `app.rs`, `engine.rs`, and `orchestrator.rs`. `Scheduler` methods (`next_ready`, `mark_running`, `mark_succeeded`, `mark_failed`, `snapshot`, `is_done`, `running_count`, `state`) are defined in Task 4 and used in Task 7.
 
 ## Notes on verification strategy
 
 The pure cores (workspace, plan, scheduler) are covered by unit tests. Worktree
 is covered by integration tests against a temp git repo. The orchestrator async
 driver, the engine subprocess, and the TUI are verified by `cargo build`,
-`clippy`, and the Task 12 end-to-end smoke test, because they shell out to
+`clippy`, and the Task 8 end-to-end smoke test, because they shell out to
 `claude` and `git` and cannot be meaningfully unit tested without heavy mocking.
