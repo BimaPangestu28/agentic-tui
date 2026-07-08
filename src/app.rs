@@ -17,7 +17,6 @@ pub enum Phase {
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum EpicStatus {
-    Pending,
     Running,
     Verifying,
     Merged,
@@ -92,12 +91,8 @@ impl App {
     pub fn apply(&mut self, ev: AppEvent) {
         match ev {
             AppEvent::StageLog { tag, line } => self.push_log(format!("[{tag}] {line}")),
-            AppEvent::StageAssistant { tag, text } => {
-                self.push_log(format!("[{tag}] . {text}"))
-            }
-            AppEvent::StageTool { tag, name } => {
-                self.push_log(format!("[{tag}] tool: {name}"))
-            }
+            AppEvent::StageAssistant { tag, text } => self.push_log(format!("[{tag}] . {text}")),
+            AppEvent::StageTool { tag, name } => self.push_log(format!("[{tag}] tool: {name}")),
             AppEvent::PlanReady { epic_count } => {
                 self.phase = Phase::Implementing;
                 self.push_log(format!("plan ready: {epic_count} epics"));

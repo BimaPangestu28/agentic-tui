@@ -33,8 +33,8 @@ use std::collections::{HashMap, HashSet};
 
 /// Parse a plan from JSON text.
 pub fn parse_plan(json: &str) -> anyhow::Result<Plan> {
-    let plan: Plan = serde_json::from_str(json)
-        .map_err(|e| anyhow::anyhow!("invalid plan.json: {e}"))?;
+    let plan: Plan =
+        serde_json::from_str(json).map_err(|e| anyhow::anyhow!("invalid plan.json: {e}"))?;
     Ok(plan)
 }
 
@@ -122,19 +122,15 @@ mod tests {
 
     #[test]
     fn validate_rejects_a_dependency_on_an_unknown_epic() {
-        let plan = parse_plan(
-            r#"{"epics":[{"id":"a","title":"t","depends_on":["ghost"]}]}"#,
-        )
-        .unwrap();
+        let plan =
+            parse_plan(r#"{"epics":[{"id":"a","title":"t","depends_on":["ghost"]}]}"#).unwrap();
         assert!(plan.validate().is_err());
     }
 
     #[test]
     fn validate_rejects_duplicate_epic_ids() {
-        let plan = parse_plan(
-            r#"{"epics":[{"id":"a","title":"t"},{"id":"a","title":"u"}]}"#,
-        )
-        .unwrap();
+        let plan =
+            parse_plan(r#"{"epics":[{"id":"a","title":"t"},{"id":"a","title":"u"}]}"#).unwrap();
         assert!(plan.validate().is_err());
     }
 

@@ -43,15 +43,26 @@ impl Scheduler {
             deps.insert(epic.id.clone(), epic.depends_on.clone());
             states.insert(epic.id.clone(), EpicState::Pending);
         }
-        Self { order, deps, states, max_parallel }
+        Self {
+            order,
+            deps,
+            states,
+            max_parallel,
+        }
     }
 
+    // Test-only introspection helper: production code drives the scheduler
+    // through next_ready/mark_*/snapshot and never queries a single state.
+    #[cfg(test)]
     pub fn state(&self, id: &str) -> Option<EpicState> {
         self.states.get(id).copied()
     }
 
     pub fn running_count(&self) -> usize {
-        self.states.values().filter(|s| **s == EpicState::Running).count()
+        self.states
+            .values()
+            .filter(|s| **s == EpicState::Running)
+            .count()
     }
 
     /// Ids that may start now: Pending, all deps Succeeded, in plan order,
@@ -95,9 +106,9 @@ impl Scheduler {
     }
 
     pub fn is_done(&self) -> bool {
-        self.states.values().all(|s| {
-            *s != EpicState::Pending && *s != EpicState::Running
-        })
+        self.states
+            .values()
+            .all(|s| *s != EpicState::Pending && *s != EpicState::Running)
     }
 
     /// A copy of every epic id and its current state.
@@ -190,7 +201,9 @@ async fn run_epic(
             *total += outcome.cost;
             let _ = tx.send(AppEvent::Cost(*total));
         }
-        let _ = tx.send(AppEvent::EpicVerifying { id: epic.id.clone() });
+        let _ = tx.send(AppEvent::EpicVerifying {
+            id: epic.id.clone(),
+        });
         if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
             let _ = tx.send(AppEvent::EpicSucceeded {
                 id: epic.id.clone(),
@@ -287,7 +300,9 @@ pub async fn run(
                         };
                         match merged {
                             Ok(MergeResult::Merged) => {
-                                let _ = tx.send(AppEvent::EpicMerged { id: epic.id.clone() });
+                                let _ = tx.send(AppEvent::EpicMerged {
+                                    id: epic.id.clone(),
+                                });
                                 {
                                     let mut sched = scheduler.lock().await;
                                     sched.mark_succeeded(&epic.id);
@@ -296,7 +311,9 @@ pub async fn run(
                                 let _ = worktree::remove(&config.repo, &wt).await;
                             }
                             Ok(MergeResult::Conflict) => {
-                                let _ = tx.send(AppEvent::EpicConflict { id: epic.id.clone() });
+                                let _ = tx.send(AppEvent::EpicConflict {
+                                    id: epic.id.clone(),
+                                });
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
                                 // Keep the worktree and branch agentic/<id> for manual merge.
@@ -446,6 +463,8 @@ mod tests {
         sched.mark_failed("a");
         let snap = sched.snapshot();
         assert_eq!(snap.len(), 4);
-        assert!(snap.iter().any(|(id, s)| id == "a" && *s == EpicState::Failed));
+        assert!(snap
+            .iter()
+            .any(|(id, s)| id == "a" && *s == EpicState::Failed));
     }
 }

@@ -26,7 +26,9 @@ struct RawWorkspace {
 /// Default location of the workspace registry.
 pub fn default_config_path() -> PathBuf {
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
-    base.join(".config").join("agentic-tui").join("workspaces.toml")
+    base.join(".config")
+        .join("agentic-tui")
+        .join("workspaces.toml")
 }
 
 /// Expand a single leading `~` to the home directory. Other paths pass through.
@@ -57,16 +59,18 @@ fn parse_workspaces_str(text: &str) -> anyhow::Result<Vec<Workspace>> {
 
 /// Load workspaces from a config file on disk.
 pub fn load_workspaces(config_path: &Path) -> anyhow::Result<Vec<Workspace>> {
-    let text = std::fs::read_to_string(config_path).map_err(|e| {
-        anyhow::anyhow!("could not read {}: {e}", config_path.display())
-    })?;
+    let text = std::fs::read_to_string(config_path)
+        .map_err(|e| anyhow::anyhow!("could not read {}: {e}", config_path.display()))?;
     parse_workspaces_str(&text)
 }
 
 /// Ensure a workspace points at a real git repository directory.
 pub fn validate(workspace: &Workspace) -> anyhow::Result<()> {
     if !workspace.path.is_dir() {
-        anyhow::bail!("workspace path is not a directory: {}", workspace.path.display());
+        anyhow::bail!(
+            "workspace path is not a directory: {}",
+            workspace.path.display()
+        );
     }
     if !workspace.path.join(".git").exists() {
         anyhow::bail!(

@@ -8,7 +8,6 @@ use tokio::process::Command;
 
 #[derive(Debug, Clone)]
 pub struct EpicWorktree {
-    pub id: String,
     pub path: PathBuf,
     pub branch: String,
 }
@@ -54,7 +53,7 @@ pub async fn create(repo: &Path, epic_id: &str) -> anyhow::Result<EpicWorktree> 
     let _ = run_git(repo, &["worktree", "remove", "--force", &path_str]).await;
     let _ = run_git(repo, &["branch", "-D", &branch]).await;
     run_git_checked(repo, &["worktree", "add", "-b", &branch, &path_str, "HEAD"]).await?;
-    Ok(EpicWorktree { id: epic_id.to_string(), path, branch })
+    Ok(EpicWorktree { path, branch })
 }
 
 /// Remove an epic worktree and delete its branch. Idempotent: a path that is
@@ -140,7 +139,9 @@ mod tests {
         git(dir, &["init", "-b", "main"]).await;
         git(dir, &["config", "user.email", "t@t.t"]).await;
         git(dir, &["config", "user.name", "t"]).await;
-        tokio::fs::write(dir.join("base.txt"), "base\n").await.unwrap();
+        tokio::fs::write(dir.join("base.txt"), "base\n")
+            .await
+            .unwrap();
         git(dir, &["add", "-A"]).await;
         git(dir, &["commit", "-m", "base"]).await;
     }
@@ -153,7 +154,9 @@ mod tests {
         init_repo(&tmp).await;
 
         let wt = create(&tmp, "epic-1").await.unwrap();
-        tokio::fs::write(wt.path.join("feature.txt"), "hi\n").await.unwrap();
+        tokio::fs::write(wt.path.join("feature.txt"), "hi\n")
+            .await
+            .unwrap();
         git(&wt.path, &["add", "-A"]).await;
         git(&wt.path, &["commit", "-m", "epic-1 work"]).await;
 
@@ -177,14 +180,24 @@ mod tests {
         init_repo(&tmp).await;
 
         let wt1 = create(&tmp, "epic-1").await.unwrap();
-        tokio::fs::write(wt1.path.join("base.txt"), "from epic-1\n").await.unwrap();
+        tokio::fs::write(wt1.path.join("base.txt"), "from epic-1\n")
+            .await
+            .unwrap();
         git(&wt1.path, &["commit", "-am", "epic-1"]).await;
-        assert_eq!(merge_into(&tmp, &wt1.branch, "integration").await.unwrap(), MergeResult::Merged);
+        assert_eq!(
+            merge_into(&tmp, &wt1.branch, "integration").await.unwrap(),
+            MergeResult::Merged
+        );
 
         let wt2 = create(&tmp, "epic-2").await.unwrap();
-        tokio::fs::write(wt2.path.join("base.txt"), "from epic-2\n").await.unwrap();
+        tokio::fs::write(wt2.path.join("base.txt"), "from epic-2\n")
+            .await
+            .unwrap();
         git(&wt2.path, &["commit", "-am", "epic-2"]).await;
-        assert_eq!(merge_into(&tmp, &wt2.branch, "integration").await.unwrap(), MergeResult::Conflict);
+        assert_eq!(
+            merge_into(&tmp, &wt2.branch, "integration").await.unwrap(),
+            MergeResult::Conflict
+        );
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }

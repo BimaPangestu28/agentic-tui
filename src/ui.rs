@@ -23,7 +23,9 @@ pub fn render_picker(f: &mut Frame, workspaces: &[Workspace], selected: usize) {
         .map(|(index, workspace)| {
             let marker = if index == selected { "> " } else { "  " };
             let style = if index == selected {
-                Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -72,11 +74,17 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
         ]),
         Line::from(vec![
             Span::styled("Workspace ", Style::default().fg(Color::DarkGray)),
-            Span::styled(truncate(&app.workspace, 70), Style::default().fg(Color::Cyan)),
+            Span::styled(
+                truncate(&app.workspace, 70),
+                Style::default().fg(Color::Cyan),
+            ),
         ]),
     ];
-    let info_p = Paragraph::new(info)
-        .block(Block::default().borders(Borders::ALL).title(" Agentic Orchestrator "));
+    let info_p = Paragraph::new(info).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Agentic Orchestrator "),
+    );
     f.render_widget(info_p, cols[0]);
 
     let ratio = if app.budget > 0.0 {
@@ -86,7 +94,11 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
     };
     let gauge = Gauge::default()
         .block(Block::default().borders(Borders::ALL).title(" Budget "))
-        .gauge_style(Style::default().fg(if ratio > 0.85 { Color::Red } else { Color::Green }))
+        .gauge_style(Style::default().fg(if ratio > 0.85 {
+            Color::Red
+        } else {
+            Color::Green
+        }))
         .ratio(ratio)
         .label(format!("${:.3} / ${:.2}", app.total_cost, app.budget));
     f.render_widget(gauge, cols[1]);
@@ -94,7 +106,6 @@ fn render_header(f: &mut Frame, app: &App, area: Rect) {
 
 fn status_glyph(status: EpicStatus) -> (&'static str, Color) {
     match status {
-        EpicStatus::Pending => ("pending  ", Color::DarkGray),
         EpicStatus::Running => ("running  ", Color::Yellow),
         EpicStatus::Verifying => ("verifying", Color::Yellow),
         EpicStatus::Merged => ("merged   ", Color::Green),
@@ -116,8 +127,7 @@ fn render_epics(f: &mut Frame, app: &App, area: Rect) {
             ]))
         })
         .collect();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::ALL).title(" Epics "));
+    let list = List::new(items).block(Block::default().borders(Borders::ALL).title(" Epics "));
     f.render_widget(list, area);
 }
 
@@ -125,7 +135,12 @@ fn render_log(f: &mut Frame, app: &App, area: Rect) {
     let inner_h = area.height.saturating_sub(2) as usize;
     let total = app.log.len();
     let start = total.saturating_sub(inner_h);
-    let lines: Vec<Line> = app.log.iter().skip(start).map(|l| Line::from(l.clone())).collect();
+    let lines: Vec<Line> = app
+        .log
+        .iter()
+        .skip(start)
+        .map(|l| Line::from(l.clone()))
+        .collect();
     let paragraph = Paragraph::new(lines)
         .block(Block::default().borders(Borders::ALL).title(" Log "))
         .wrap(Wrap { trim: false });

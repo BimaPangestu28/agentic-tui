@@ -77,14 +77,12 @@ pub async fn run_stage(
             Err(_) => continue, // non-JSON lines are ignored
         };
         match value.get("type").and_then(|t| t.as_str()) {
-            Some("system") => {
-                if value.get("subtype").and_then(|s| s.as_str()) == Some("init") {
-                    let model = value.get("model").and_then(|m| m.as_str()).unwrap_or("");
-                    let _ = tx.send(AppEvent::StageLog {
-                        tag: tag.to_string(),
-                        line: format!("session init ({model})"),
-                    });
-                }
+            Some("system") if value.get("subtype").and_then(|s| s.as_str()) == Some("init") => {
+                let model = value.get("model").and_then(|m| m.as_str()).unwrap_or("");
+                let _ = tx.send(AppEvent::StageLog {
+                    tag: tag.to_string(),
+                    line: format!("session init ({model})"),
+                });
             }
             Some("assistant") => {
                 if let Some(content) = value
@@ -124,8 +122,10 @@ pub async fn run_stage(
                     .get("total_cost_usd")
                     .and_then(|c| c.as_f64())
                     .unwrap_or(0.0);
-                let is_error =
-                    value.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                let is_error = value
+                    .get("is_error")
+                    .and_then(|e| e.as_bool())
+                    .unwrap_or(false);
                 let subtype = value.get("subtype").and_then(|s| s.as_str()).unwrap_or("");
                 ok = !is_error && (subtype.is_empty() || subtype == "success");
             }

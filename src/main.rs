@@ -62,16 +62,17 @@ fn parse_args() -> Option<Args> {
     if goal.is_empty() {
         None
     } else {
-        Some(Args { goal, workspace, verify })
+        Some(Args {
+            goal,
+            workspace,
+            verify,
+        })
     }
 }
 
 /// Resolve the chosen workspace: match `--workspace` by name or path, otherwise
 /// show the picker. Returns None if the user quits the picker.
-fn resolve_workspace(
-    args: &Args,
-    workspaces: &[Workspace],
-) -> anyhow::Result<Option<Workspace>> {
+fn resolve_workspace(args: &Args, workspaces: &[Workspace]) -> anyhow::Result<Option<Workspace>> {
     if let Some(wanted) = &args.workspace {
         if let Some(found) = workspaces.iter().find(|w| &w.name == wanted) {
             return Ok(Some(found.clone()));
@@ -105,11 +106,7 @@ fn run_picker(workspaces: &[Workspace]) -> anyhow::Result<Option<Workspace>> {
         if let Event::Key(key) = crossterm::event::read()? {
             match key.code {
                 KeyCode::Up => selected = selected.saturating_sub(1),
-                KeyCode::Down => {
-                    if selected + 1 < workspaces.len() {
-                        selected += 1;
-                    }
-                }
+                KeyCode::Down if selected + 1 < workspaces.len() => selected += 1,
                 KeyCode::Enter => break Some(workspaces[selected].clone()),
                 KeyCode::Char('q') => break None,
                 _ => {}
@@ -126,13 +123,15 @@ async fn main() -> anyhow::Result<()> {
     let args = match parse_args() {
         Some(a) => a,
         None => {
-            eprintln!("usage: agentic-tui \"<goal>\" [--workspace <name|path>] [--verify \"<cmd>\"]");
+            eprintln!(
+                "usage: agentic-tui \"<goal>\" [--workspace <name|path>] [--verify \"<cmd>\"]"
+            );
             std::process::exit(1);
         }
     };
 
-    let workspaces = workspace::load_workspaces(&workspace::default_config_path())
-        .unwrap_or_default();
+    let workspaces =
+        workspace::load_workspaces(&workspace::default_config_path()).unwrap_or_default();
     let selected = match resolve_workspace(&args, &workspaces)? {
         Some(w) => w,
         None => {
@@ -141,10 +140,20 @@ async fn main() -> anyhow::Result<()> {
         }
     };
     workspace::validate(&selected)?;
-    let repo = selected.path.canonicalize().unwrap_or(selected.path.clone());
-    let verify_cmd = args.verify.clone().unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
+    let repo = selected
+        .path
+        .canonicalize()
+        .unwrap_or(selected.path.clone());
+    let verify_cmd = args
+        .verify
+        .clone()
+        .unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
 
-    let mut app = App::new(args.goal.clone(), selected.name.clone(), config::GLOBAL_BUDGET_USD);
+    let mut app = App::new(
+        args.goal.clone(),
+        selected.name.clone(),
+        config::GLOBAL_BUDGET_USD,
+    );
 
     let (tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
 
@@ -242,7 +251,9 @@ async fn run_pipeline(
         .map_err(|e| anyhow::anyhow!("plan.json was not written: {e}"))?;
     let parsed = plan::parse_plan(&plan_text)?;
     parsed.validate()?;
-    let _ = tx.send(AppEvent::PlanReady { epic_count: parsed.epics.len() });
+    let _ = tx.send(AppEvent::PlanReady {
+        epic_count: parsed.epics.len(),
+    });
 
     let run_config = orchestrator::RunConfig {
         repo: repo.to_path_buf(),

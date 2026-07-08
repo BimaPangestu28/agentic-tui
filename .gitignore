@@ -10,3 +10,7 @@
 
 # OS noise
 .DS_Store
+
+# Orchestrator scratch state
+/.agentic-plan.json
+/.agentic-worktrees/

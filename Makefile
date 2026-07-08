@@ -1,15 +1,15 @@
-# Makefile for agentic-tui (PRD Generator TUI)
+# Makefile for agentic-tui (multi-stage agentic orchestrator)
 #
 # Common targets for building, running, and checking the project.
-# Override REPO and GOAL when running the tool, e.g.:
-#   make run GOAL="Add per-tenant rate limiting" REPO=/path/to/repo
+# Override GOAL and WORKSPACE when running the tool, e.g.:
+#   make run GOAL="Add a health check endpoint" WORKSPACE=greentic
 
 CARGO ?= cargo
 BIN   := agentic-tui
 
-# Default goal and repository for `make run`.
-GOAL ?= Add per-tenant rate limiting in the API gateway
-REPO ?= .
+# Default goal and workspace for `make run`.
+GOAL ?= Add a health check endpoint
+WORKSPACE ?=
 
 .DEFAULT_GOAL := help
 
@@ -27,8 +27,8 @@ release: ## Build an optimized release binary
 	$(CARGO) build --release
 
 .PHONY: run
-run: ## Run the TUI (GOAL="..." REPO=/path)
-	$(CARGO) run -- "$(GOAL)" --repo "$(REPO)"
+run: ## Run the orchestrator (GOAL="..." WORKSPACE=name|path)
+	$(CARGO) run -- "$(GOAL)" $(if $(WORKSPACE),--workspace "$(WORKSPACE)",)
 
 .PHONY: check
 check: ## Type-check without producing a binary
