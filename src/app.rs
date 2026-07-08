@@ -65,6 +65,8 @@ pub struct EpicView {
     pub title: String,
     pub status: EpicStatus,
     pub cost: f64,
+    #[allow(dead_code)]
+    pub depends_on: Vec<String>,
 }
 
 pub struct App {
@@ -127,9 +129,19 @@ impl App {
             AppEvent::StageLog { tag, line } => self.push_log(format!("[{tag}] {line}")),
             AppEvent::StageAssistant { tag, text } => self.push_log(format!("[{tag}] . {text}")),
             AppEvent::StageTool { tag, name } => self.push_log(format!("[{tag}] tool: {name}")),
-            AppEvent::PlanReady { epic_count } => {
+            AppEvent::PlanReady { epics } => {
                 self.phase = Phase::Implementing;
-                self.push_log(format!("plan ready: {epic_count} epics"));
+                self.epics = epics
+                    .into_iter()
+                    .map(|meta| EpicView {
+                        id: meta.id,
+                        title: meta.title,
+                        status: EpicStatus::Pending,
+                        cost: 0.0,
+                        depends_on: meta.depends_on,
+                    })
+                    .collect();
+                self.push_log(format!("plan ready: {} epics", self.epics.len()));
             }
             AppEvent::EpicStarted { id, title } => {
                 if self.epic_mut(&id).is_none() {
@@ -138,6 +150,7 @@ impl App {
                         title: title.clone(),
                         status: EpicStatus::Running,
                         cost: 0.0,
+                        depends_on: Vec::new(),
                     });
                 } else {
                     self.set_status(&id, EpicStatus::Running);
@@ -166,6 +179,7 @@ impl App {
                         title: String::new(),
                         status: EpicStatus::Skipped,
                         cost: 0.0,
+                        depends_on: Vec::new(),
                     });
                 } else {
                     self.set_status(&id, EpicStatus::Skipped);
@@ -234,5 +248,29 @@ mod tests {
     fn no_dependencies_is_never_on_hold() {
         let status_by_id = HashMap::new();
         assert!(!is_on_hold(&[], &status_by_id));
+    }
+
+    #[test]
+    fn plan_ready_seeds_a_pending_card_per_epic() {
+        use crate::event::{AppEvent, EpicMeta};
+        let mut app = App::new("goal".to_string(), "ws".to_string(), 10.0);
+        app.apply(AppEvent::PlanReady {
+            epics: vec![
+                EpicMeta {
+                    id: "a".to_string(),
+                    title: "A".to_string(),
+                    depends_on: vec![],
+                },
+                EpicMeta {
+                    id: "b".to_string(),
+                    title: "B".to_string(),
+                    depends_on: vec!["a".to_string()],
+                },
+            ],
+        });
+        assert_eq!(app.epics.len(), 2);
+        assert!(app.epics.iter().all(|e| e.status == EpicStatus::Pending));
+        let b = app.epics.iter().find(|e| e.id == "b").unwrap();
+        assert_eq!(b.depends_on, vec!["a".to_string()]);
     }
 }

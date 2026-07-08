@@ -251,9 +251,16 @@ async fn run_pipeline(
         .map_err(|e| anyhow::anyhow!("plan.json was not written: {e}"))?;
     let parsed = plan::parse_plan(&plan_text)?;
     parsed.validate()?;
-    let _ = tx.send(AppEvent::PlanReady {
-        epic_count: parsed.epics.len(),
-    });
+    let epic_metas: Vec<event::EpicMeta> = parsed
+        .epics
+        .iter()
+        .map(|epic| event::EpicMeta {
+            id: epic.id.clone(),
+            title: epic.title.clone(),
+            depends_on: epic.depends_on.clone(),
+        })
+        .collect();
+    let _ = tx.send(AppEvent::PlanReady { epics: epic_metas });
 
     let run_config = orchestrator::RunConfig {
         repo: repo.to_path_buf(),
