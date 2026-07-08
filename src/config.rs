@@ -66,3 +66,27 @@ Step 6. After writing, print the path to the PRD and a two line scope summary.",
         out = out_path,
     )
 }
+
+// --- Orchestrator knobs (single-stage items above are removed in the switchover) ---
+
+// Global cost circuit breaker across every session in a run.
+pub const GLOBAL_BUDGET_USD: f64 = 10.0;
+// Budget for a single stage (plan or one epic).
+pub const EPIC_BUDGET_USD: f64 = 2.0;
+
+// Models. Plan quality drives epic accuracy, so plan defaults to opus.
+pub const MODEL_PLAN: &str = "opus";
+pub const MODEL_EPIC: &str = "sonnet";
+
+// Read-only + Write for planning. Adds Edit and Bash for epics that write code.
+pub const PLAN_TOOLS: &str = "Read,Glob,Grep,Write,WebSearch,WebFetch,Skill";
+pub const EPIC_TOOLS: &str = "Read,Glob,Grep,Edit,Write,Bash,WebSearch,WebFetch,Skill";
+
+pub const PLAN_MAX_TURNS: u32 = 20;
+pub const EPIC_MAX_TURNS: u32 = 40;
+
+// How many epics may run in parallel.
+pub const MAX_PARALLEL_EPICS: usize = 3;
+
+// Command run inside each epic worktree to decide if the epic passed.
+pub const DEFAULT_VERIFY_CMD: &str = "make verify";
