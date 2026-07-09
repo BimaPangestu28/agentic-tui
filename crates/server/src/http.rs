@@ -4,14 +4,20 @@
 //! flag; the TUI remains the default entry point.
 
 use axum::{
+    extract::ws::{Message, WebSocket, WebSocketUpgrade},
+    extract::Path,
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use rust_embed::RustEmbed;
-use shared::{SaveRequest, ScanRequest, ScanResponse, WorkspaceDto};
+use shared::{
+    SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse, WorkspaceDto,
+};
+use tokio::sync::broadcast;
 
+use crate::run::{self, StartError};
 use crate::workspace::{self, Workspace};
 
 #[derive(RustEmbed)]
@@ -67,6 +73,61 @@ async fn save_workspaces_handler(Json(request): Json<SaveRequest>) -> Response {
     }
 }
 
+/// `POST /api/runs`: start a pipeline run. 400 with a message if the request
+/// does not resolve to a runnable repo/refs, 409 if a run is already active.
+async fn start_run(Json(request): Json<StartRunRequest>) -> Response {
+    match run::start(request).await {
+        Ok(run_id) => Json(StartRunResponse { run_id }).into_response(),
+        Err(StartError::Busy) => (StatusCode::CONFLICT, StartError::Busy.message()).into_response(),
+        Err(e @ StartError::Invalid(_)) => (StatusCode::BAD_REQUEST, e.message()).into_response(),
+    }
+}
+
+/// `POST /api/runs/{id}/abort`: abort the run if it is the active one and has
+/// not completed. A no-op (still 200) for an unknown or finished id.
+async fn abort_run(Path(id): Path<String>) -> StatusCode {
+    run::abort(&id).await;
+    StatusCode::OK
+}
+
+/// `GET /api/runs/{id}/events`: upgrade to a WebSocket, send the current
+/// `App` snapshot as JSON text, then forward every broadcast snapshot as JSON
+/// text until the channel closes.
+async fn run_events(Path(id): Path<String>, ws: WebSocketUpgrade) -> Response {
+    ws.on_upgrade(move |socket| stream_run(socket, id))
+}
+
+async fn stream_run(mut socket: WebSocket, id: String) {
+    // Returning drops `socket`, which closes the connection; there is no
+    // separate close handshake to send beyond that.
+    let Some((snapshot, mut rx)) = run::subscribe(&id).await else {
+        return;
+    };
+    let Ok(text) = serde_json::to_string(&snapshot) else {
+        return;
+    };
+    if socket.send(Message::Text(text.into())).await.is_err() {
+        return;
+    }
+
+    loop {
+        match rx.recv().await {
+            Ok(app) => {
+                let Ok(text) = serde_json::to_string(&app) else {
+                    continue;
+                };
+                if socket.send(Message::Text(text.into())).await.is_err() {
+                    break;
+                }
+            }
+            // A slow subscriber that fell behind: resync on the next snapshot
+            // rather than closing the connection.
+            Err(broadcast::error::RecvError::Lagged(_)) => continue,
+            Err(broadcast::error::RecvError::Closed) => break,
+        }
+    }
+}
+
 /// Serve an embedded asset for any path, falling back to `index.html` so
 /// client-side routes (once the app has any) resolve to the same shell.
 async fn static_handler(uri: Uri) -> Response {
@@ -90,6 +151,9 @@ pub fn router() -> Router {
             get(list_workspaces).post(save_workspaces_handler),
         )
         .route("/api/workspaces/scan", post(scan_workspaces))
+        .route("/api/runs", post(start_run))
+        .route("/api/runs/{id}/abort", post(abort_run))
+        .route("/api/runs/{id}/events", get(run_events))
         .fallback(static_handler)
 }
 

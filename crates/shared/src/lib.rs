@@ -11,7 +11,7 @@ use serde::{Deserialize, Serialize};
 
 const LOG_CAP: usize = 2000;
 
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum Phase {
     Planning,
     Implementing,
@@ -271,6 +271,25 @@ pub struct SaveRequest {
     pub workspaces: Vec<WorkspaceDto>,
 }
 
+/// Body of `POST /api/runs`: everything needed to start a pipeline run.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartRunRequest {
+    pub workspace: WorkspaceDto,
+    pub goal: String,
+    pub base: Option<String>,
+    pub into: Option<String>,
+    pub verify: Option<String>,
+    pub refine_cost: f64,
+}
+
+/// Response of `POST /api/runs`: the id of the started run, used to subscribe
+/// to its `App` snapshots over `GET /api/runs/{id}/events` and to abort it via
+/// `POST /api/runs/{id}/abort`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StartRunResponse {
+    pub run_id: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -372,6 +391,43 @@ mod tests {
         let back: WorkspaceDto =
             serde_json::from_str(&json).expect("WorkspaceDto must deserialize");
         assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn start_run_request_round_trips_through_json() {
+        let request = StartRunRequest {
+            workspace: WorkspaceDto {
+                name: "greentic".to_string(),
+                path: "/tmp/greentic".to_string(),
+                base: None,
+                integration: None,
+            },
+            goal: "add a health check".to_string(),
+            base: Some("develop".to_string()),
+            into: None,
+            verify: Some("make verify".to_string()),
+            refine_cost: 0.05,
+        };
+        let json = serde_json::to_string(&request).expect("StartRunRequest must serialize");
+        let back: StartRunRequest =
+            serde_json::from_str(&json).expect("StartRunRequest must deserialize");
+        assert_eq!(back.workspace.name, "greentic");
+        assert_eq!(back.goal, "add a health check");
+        assert_eq!(back.base.as_deref(), Some("develop"));
+        assert_eq!(back.into, None);
+        assert_eq!(back.verify.as_deref(), Some("make verify"));
+        assert_eq!(back.refine_cost, 0.05);
+    }
+
+    #[test]
+    fn start_run_response_round_trips_through_json() {
+        let response = StartRunResponse {
+            run_id: "1".to_string(),
+        };
+        let json = serde_json::to_string(&response).expect("StartRunResponse must serialize");
+        let back: StartRunResponse =
+            serde_json::from_str(&json).expect("StartRunResponse must deserialize");
+        assert_eq!(back.run_id, "1");
     }
 
     #[test]
