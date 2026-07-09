@@ -7,7 +7,7 @@ on:
 
 jobs:
   verify:
-    name: fmt-check, clippy, test, web
+    name: fmt-check, clippy, unit, e2e, web
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,9 +27,54 @@ jobs:
       - name: Build the web UI
         run: cd crates/web && trunk build --release
 
-      # `make verify` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D
-      # warnings`, and `cargo test` on the native crates (server and shared),
-      # plus `cargo check -p web --target wasm32-unknown-unknown`, matching
-      # the local pre-commit gate exactly.
-      - name: Run make verify
-        run: make verify
+      - name: Format check
+        run: make fmt-check
+
+      - name: Clippy
+        run: make lint
+
+      # Unit tests (in-crate #[cfg(test)] modules) and end-to-end integration
+      # tests (crates/server/tests) run as separate steps so a failure names
+      # which layer broke.
+      - name: Unit tests
+        run: make test-unit
+
+      - name: End-to-end tests
+        run: make test-e2e
+
+      - name: Web wasm check
+        run: make web-check
+
+  browser-smoke:
+    name: Playwright browser smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install trunk
+        run: cargo install --locked trunk
+
+      - name: Build the release binary (embeds the web UI)
+        run: make release
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright and its browser
+        run: |
+          cd e2e
+          npm install
+          npx playwright install --with-deps chromium
+
+      - name: Run the browser smoke test
+        run: cd e2e && npx playwright test
