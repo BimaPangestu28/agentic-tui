@@ -552,6 +552,30 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
 .scan-result-row .info { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
 .scan-result-row .workspace-path { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+.repo-scope-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  border: 1px solid var(--border);
+  border-radius: var(--r-md);
+  padding: var(--sp-2);
+  max-height: 220px;
+  overflow-y: auto;
+}
+.repo-scope-row {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--sp-2) var(--sp-3);
+  min-width: 0;
+}
+.repo-scope-row .workspace-path {
+  margin-left: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* ============================================================================
    6. SCREEN B — NEW RUN
    ============================================================================ */

@@ -7,7 +7,7 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::NavigateOptions;
-use shared::{StartRunRequest, WorkspaceDto};
+use shared::{RepoDto, StartRunRequest, WorkspaceDto};
 
 use crate::api;
 
@@ -36,14 +36,44 @@ enum FlowState {
     Error(String),
 }
 
-/// The directory the refine passes run in. For now this is the first repo's
-/// path; Task 7 refines this to the workspace group's common root.
-fn refine_root(workspace: &WorkspaceDto) -> String {
-    workspace
-        .repos
-        .first()
-        .map(|repo| repo.path.clone())
-        .unwrap_or_default()
+/// The directory the refine passes run in. The refine passes launch a single
+/// `claude` process against one working directory, not one per repo, so a
+/// multi-repo workspace needs a single shared root. A one-repo workspace has
+/// nothing to share a root with, so its parent directory is used instead. For
+/// several repos, this walks each path's `/`-separated components and keeps
+/// the leading run that is identical across all of them; if that run is
+/// empty (or only the leading `/`), the repos have no meaningful common
+/// ancestor (e.g. they live under unrelated trees), so the first repo's own
+/// path is used rather than refining against the filesystem root.
+fn common_root(repos: &[RepoDto]) -> String {
+    let Some(first) = repos.first() else {
+        return String::new();
+    };
+    if repos.len() == 1 {
+        return match first.path.rsplit_once('/') {
+            Some(("", _)) => "/".to_string(),
+            Some((parent, _)) => parent.to_string(),
+            None => first.path.clone(),
+        };
+    }
+
+    let mut common: Vec<&str> = first.path.split('/').collect();
+    for repo in &repos[1..] {
+        let parts: Vec<&str> = repo.path.split('/').collect();
+        let shared = common
+            .iter()
+            .zip(parts.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        common.truncate(shared);
+    }
+
+    let joined = common.join("/");
+    if joined.is_empty() || joined == "/" {
+        first.path.clone()
+    } else {
+        joined
+    }
 }
 
 /// Trims a text input and turns a blank value into `None`, matching the
@@ -86,32 +116,20 @@ pub fn NewRun() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
 
     let goal_input = RwSignal::new(String::new());
-    let base_input = RwSignal::new(String::new());
-    let into_input = RwSignal::new(String::new());
     let verify_input = RwSignal::new(String::new());
     let refine_enabled = RwSignal::new(true);
 
     let flow = RwSignal::new(FlowState::Editing);
 
     // Load the workspace list once and pick out the one named by the
-    // `workspace` query param, prefilling base/into from its defaults. This
-    // app is CSR-only, so component creation and "on mount" are the same
-    // point in time.
+    // `workspace` query param. This app is CSR-only, so component creation
+    // and "on mount" are the same point in time.
     {
         let name = workspace_name.clone();
         spawn_local(async move {
             match api::list_workspaces().await {
                 Ok(list) => match list.into_iter().find(|w| w.name == name) {
-                    Some(found) => {
-                        // Prefill the advanced options from the first repo's
-                        // defaults. Task 7 replaces these single fields with a
-                        // per-repo view.
-                        if let Some(first) = found.repos.first() {
-                            base_input.set(first.base.clone().unwrap_or_default());
-                            into_input.set(first.integration.clone().unwrap_or_default());
-                        }
-                        workspace.set(Some(found));
-                    }
+                    Some(found) => workspace.set(Some(found)),
                     None => {
                         load_error.set(Some(format!("workspace '{name}' was not found")));
                     }
@@ -141,7 +159,7 @@ pub fn NewRun() -> impl IntoView {
 
         if refine_enabled.get_untracked() {
             flow.set(FlowState::Submitting);
-            let root = refine_root(&selected);
+            let root = common_root(&selected.repos);
             spawn_local(async move {
                 match api::refine_questions(&root, &goal).await {
                     Ok(response) if response.questions.is_empty() => {
@@ -198,7 +216,7 @@ pub fn NewRun() -> impl IntoView {
         };
         let original_goal = goal_input.get_untracked().trim().to_string();
         let qa_pairs: Vec<(String, String)> = questions.into_iter().zip(answers).collect();
-        let root = refine_root(&selected);
+        let root = common_root(&selected.repos);
         flow.set(FlowState::Submitting);
         spawn_local(async move {
             match api::refine_finalize(&root, &original_goal, qa_pairs).await {
@@ -244,6 +262,25 @@ pub fn NewRun() -> impl IntoView {
     // enclosing view re-renders on every flow change), so the click handler
     // is cloned rather than moved out on each call.
     let render_form = move |error: Option<String>| {
+        // The workspace is loaded before the form renders (the Editing and Error
+        // states are only reached after the load completes), so read it
+        // untracked: the repo list is fixed for the lifetime of this view.
+        let repo_rows: Vec<_> = workspace
+            .get_untracked()
+            .map(|ws| {
+                ws.repos
+                    .into_iter()
+                    .map(|repo| {
+                        view! {
+                            <div class="repo-scope-row">
+                                <span class="workspace-name">{repo.name}</span>
+                                <span class="workspace-path mono">{repo.path}</span>
+                            </div>
+                        }
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         view! {
             <div class="new-run-form">
                 {error.map(|msg| view! { <p class="error">{msg}</p> })}
@@ -260,34 +297,26 @@ pub fn NewRun() -> impl IntoView {
                     </p>
                 </div>
 
+                <div class="field">
+                    <label>"Repos in scope"</label>
+                    <div class="repo-scope-list">
+                        {repo_rows}
+                    </div>
+                </div>
+
                 <div class="field-group">
                     <div class="field-group-title">"Advanced options"</div>
                     <div class="field full">
-                        <label>"Base branch"</label>
-                        <input
-                            type="text"
-                            placeholder="HEAD"
-                            prop:value=move || base_input.get()
-                            on:input=move |ev| base_input.set(event_target_value(&ev))
-                        />
-                    </div>
-                    <div class="field full">
-                        <label>"Integration branch"</label>
-                        <input
-                            type="text"
-                            placeholder="agentic-integration"
-                            prop:value=move || into_input.get()
-                            on:input=move |ev| into_input.set(event_target_value(&ev))
-                        />
-                    </div>
-                    <div class="field full">
-                        <label>"Verify command"</label>
+                        <label>"Default verify command"</label>
                         <input
                             type="text"
                             placeholder="make verify"
                             prop:value=move || verify_input.get()
                             on:input=move |ev| verify_input.set(event_target_value(&ev))
                         />
+                        <p class="hint">
+                            "The planner may choose a verify command per repo; this is the fallback."
+                        </p>
                     </div>
                 </div>
 
