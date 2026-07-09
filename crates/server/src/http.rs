@@ -14,7 +14,8 @@ use axum::{
 use rust_embed::RustEmbed;
 use shared::{
     RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
-    SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse, WorkspaceDto,
+    RunSummary, SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse,
+    WorkspaceDto,
 };
 use tokio::sync::broadcast;
 
@@ -75,12 +76,19 @@ async fn save_workspaces_handler(Json(request): Json<SaveRequest>) -> Response {
     }
 }
 
+/// `GET /api/runs`: every run started this session (active and finished),
+/// for the multi-run dashboard.
+async fn list_runs() -> Json<Vec<RunSummary>> {
+    Json(run::list().await)
+}
+
 /// `POST /api/runs`: start a pipeline run. 400 with a message if the request
-/// does not resolve to a runnable repo/refs, 409 if a run is already active.
+/// does not resolve to a runnable repo/refs, 409 if the request's workspace
+/// already has a run in flight.
 async fn start_run(Json(request): Json<StartRunRequest>) -> Response {
     match run::start(request).await {
         Ok(run_id) => Json(StartRunResponse { run_id }).into_response(),
-        Err(e @ StartError::Busy) => (StatusCode::CONFLICT, e.message()).into_response(),
+        Err(e @ StartError::WorkspaceBusy) => (StatusCode::CONFLICT, e.message()).into_response(),
         Err(e @ StartError::Invalid(_)) => (StatusCode::BAD_REQUEST, e.message()).into_response(),
     }
 }
@@ -180,7 +188,7 @@ pub fn router() -> Router {
             get(list_workspaces).post(save_workspaces_handler),
         )
         .route("/api/workspaces/scan", post(scan_workspaces))
-        .route("/api/runs", post(start_run))
+        .route("/api/runs", get(list_runs).post(start_run))
         .route("/api/runs/{id}/abort", post(abort_run))
         .route("/api/runs/{id}/events", get(run_events))
         .route("/api/refine/questions", post(refine_questions))

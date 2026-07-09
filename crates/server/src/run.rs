@@ -1,8 +1,9 @@
-//! Run manager: one pipeline run active at a time. Starts a run in a spawned
-//! task, applies its `StageEvent`s to an `App`, and broadcasts a snapshot of
-//! the `App` after each event so any number of WebSocket subscribers can
-//! follow the same run.
+//! Run manager: a session registry of pipeline runs, one active run per
+//! workspace at a time. Starts a run in a spawned task, applies its
+//! `StageEvent`s to an `App`, and broadcasts a snapshot of the `App` after
+//! each event so any number of WebSocket subscribers can follow the same run.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -21,27 +22,31 @@ pub use shared::StartRunRequest;
 /// behind just resyncs on the next snapshot instead of losing the run.
 const SNAPSHOT_CHANNEL_CAPACITY: usize = 256;
 
-/// Why `start` rejected a request: an invalid request (maps to 400) or a run
-/// already active (maps to 409).
+/// Why `start` rejected a request: an invalid request (maps to 400) or the
+/// request's workspace already has a run in flight (maps to 409).
 #[derive(Debug, Clone, PartialEq)]
 pub enum StartError {
     Invalid(String),
-    Busy,
+    WorkspaceBusy,
 }
 
 impl StartError {
     pub fn message(&self) -> String {
         match self {
             StartError::Invalid(msg) => msg.clone(),
-            StartError::Busy => "a run is already active".to_string(),
+            StartError::WorkspaceBusy => {
+                "this workspace already has a run in flight; only one run per workspace at a time"
+                    .to_string()
+            }
         }
     }
 }
 
-/// The one active (or most recently finished) run. `None` before the first
-/// run and briefly after an abort clears it.
+/// One run in the registry, active or finished. Finished runs are kept
+/// around (not removed) so they still show up in `list()`.
 struct RunHandle {
     id: String,
+    workspace: String,
     app: Arc<Mutex<App>>,
     tx: broadcast::Sender<App>,
     task: JoinHandle<()>,
@@ -49,14 +54,18 @@ struct RunHandle {
     completed: Arc<AtomicBool>,
 }
 
-static ACTIVE: Mutex<Option<RunHandle>> = Mutex::const_new(None);
+/// Every run started this session, keyed by id. `Mutex::const_new` cannot
+/// build a `HashMap` in a const context, so the map is built lazily on first
+/// use via `get_or_insert_with` at each lock site.
+static RUNS: Mutex<Option<HashMap<String, RunHandle>>> = Mutex::const_new(None);
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Start a run from `req`. Validates the resolved base ref and integration
-/// branch before touching the active-run slot, so an invalid request never
-/// contends with a real run. Rejects with `StartError::Busy` if a run is
-/// already active and not yet completed.
+/// branch before touching the registry, so an invalid request never contends
+/// with a real run. Rejects with `StartError::WorkspaceBusy` if the request's
+/// workspace already has a run active (not yet completed) in the registry.
 pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
+    let workspace_name = req.workspace.name.clone();
     let repo = workspace::expand_tilde(&req.workspace.path);
     let repo = repo.canonicalize().unwrap_or(repo);
 
@@ -88,17 +97,19 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
         )));
     }
 
-    let mut active = ACTIVE.lock().await;
-    if let Some(existing) = active.as_ref() {
-        if !existing.completed.load(Ordering::SeqCst) {
-            return Err(StartError::Busy);
-        }
+    let mut guard = RUNS.lock().await;
+    let runs = guard.get_or_insert_with(HashMap::new);
+    let workspace_busy = runs.values().any(|handle| {
+        handle.workspace == workspace_name && !handle.completed.load(Ordering::SeqCst)
+    });
+    if workspace_busy {
+        return Err(StartError::WorkspaceBusy);
     }
 
     let id = NEXT_ID.fetch_add(1, Ordering::SeqCst).to_string();
     let app = Arc::new(Mutex::new(App::new(
         req.goal.clone(),
-        req.workspace.name.clone(),
+        workspace_name.clone(),
         config::GLOBAL_BUDGET_USD,
     )));
     let (tx, _rx) = broadcast::channel::<App>(SNAPSHOT_CHANNEL_CAPACITY);
@@ -116,14 +127,18 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
         req.refine_cost,
     );
 
-    *active = Some(RunHandle {
-        id: id.clone(),
-        app,
-        tx,
-        task,
-        repo,
-        completed,
-    });
+    runs.insert(
+        id.clone(),
+        RunHandle {
+            id: id.clone(),
+            workspace: workspace_name,
+            app,
+            tx,
+            task,
+            repo,
+            completed,
+        },
+    );
 
     Ok(id)
 }
@@ -183,42 +198,75 @@ fn spawn_pipeline(
     })
 }
 
-/// Abort the active run if `id` matches it and it has not completed: cancel
-/// its task (killing any in-flight `claude`/`git` child processes) and clean
-/// up epic worktrees, mirroring the TUI's abort path. A no-op for an unknown
-/// or already-finished id.
+/// Abort the run identified by `id` if it exists and has not completed:
+/// cancel its task (killing any in-flight `claude`/`git` child processes),
+/// mark it `Fatal` so subscribers and `list()` see a terminal state, and
+/// clean up epic worktrees, mirroring the TUI's abort path. The handle stays
+/// in the registry (never removed) so the run still appears in `list()`. A
+/// no-op for an unknown or already-finished id.
 pub async fn abort(id: &str) {
-    // Take the handle out and release the global lock before the awaits below,
-    // so a slow task teardown or worktree cleanup never blocks other start,
-    // abort, or subscribe requests.
-    let handle = {
-        let mut active = ACTIVE.lock().await;
-        let matches_active = matches!(
-            active.as_ref(),
-            Some(handle) if handle.id == id && !handle.completed.load(Ordering::SeqCst)
-        );
-        if !matches_active {
-            return;
+    // Extract what we need under the lock, then release it before the awaits
+    // below, so a slow task teardown or worktree cleanup never blocks other
+    // start, abort, list, or subscribe requests.
+    let target = {
+        let mut guard = RUNS.lock().await;
+        let runs = guard.get_or_insert_with(HashMap::new);
+        match runs.get(id) {
+            Some(handle) if !handle.completed.load(Ordering::SeqCst) => Some((
+                handle.task.abort_handle(),
+                handle.app.clone(),
+                handle.tx.clone(),
+                handle.completed.clone(),
+                handle.repo.clone(),
+            )),
+            _ => None,
         }
-        active.take()
     };
-    if let Some(handle) = handle {
-        handle.task.abort();
-        let _ = handle.task.await;
-        if let Err(e) = worktree::cleanup_all(&handle.repo).await {
+    if let Some((abort_handle, app, tx, completed, repo)) = target {
+        abort_handle.abort();
+        {
+            let mut app = app.lock().await;
+            app.apply_stage(StageEvent::Fatal {
+                reason: "run aborted".to_string(),
+            });
+            let _ = tx.send(app.clone());
+        }
+        completed.store(true, Ordering::SeqCst);
+        if let Err(e) = worktree::cleanup_all(&repo).await {
             eprintln!("warning: could not clean up worktrees after abort: {e}");
         }
     }
 }
 
 /// The current `App` snapshot and a live receiver of further snapshots for
-/// the run identified by `id`, or `None` if it is not the active run.
+/// the run identified by `id`, or `None` if no such run exists.
 pub async fn subscribe(id: &str) -> Option<(App, broadcast::Receiver<App>)> {
-    let active = ACTIVE.lock().await;
-    let handle = active.as_ref()?;
-    if handle.id != id {
-        return None;
-    }
+    let mut guard = RUNS.lock().await;
+    let runs = guard.get_or_insert_with(HashMap::new);
+    let handle = runs.get(id)?;
     let snapshot = handle.app.lock().await.clone();
     Some((snapshot, handle.tx.subscribe()))
+}
+
+/// A snapshot of every run started this session (active and finished),
+/// sorted by id, for the multi-run dashboard.
+pub async fn list() -> Vec<shared::RunSummary> {
+    let mut guard = RUNS.lock().await;
+    let runs = guard.get_or_insert_with(HashMap::new);
+    let mut out = Vec::with_capacity(runs.len());
+    for handle in runs.values() {
+        let app = handle.app.lock().await;
+        out.push(shared::RunSummary {
+            id: handle.id.clone(),
+            workspace: handle.workspace.clone(),
+            path: handle.repo.to_string_lossy().to_string(),
+            goal: app.goal.clone(),
+            phase: app.phase,
+            total_cost: app.total_cost,
+            budget: app.budget,
+            epics: app.epics.clone(),
+        });
+    }
+    out.sort_by(|a, b| a.id.cmp(&b.id));
+    out
 }

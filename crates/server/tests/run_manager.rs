@@ -70,6 +70,120 @@ fn workspace_dto(repo: &Path, name: &str) -> WorkspaceDto {
     }
 }
 
+/// Write a fake `claude` that sleeps before finishing, so a run started
+/// against it stays active (not yet `completed`) long enough for a test to
+/// exercise the per-workspace busy check while it is still in flight.
+fn install_slow_fake_claude(bin_dir: &Path, sleep_secs: u32) {
+    std::fs::create_dir_all(bin_dir).expect("create bin dir");
+    let script = bin_dir.join("claude");
+    std::fs::write(
+        &script,
+        format!(
+            "#!/bin/sh\n\
+             sleep {sleep_secs}\n\
+             echo '{{\"epics\":[]}}' > .agentic-plan.json\n\
+             echo '{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.1}}'\n"
+        ),
+    )
+    .expect("write fake claude script");
+    let mut perms = std::fs::metadata(&script)
+        .expect("stat fake claude script")
+        .permissions();
+    perms.set_mode(0o755);
+    std::fs::set_permissions(&script, perms).expect("chmod fake claude script");
+}
+
+/// The registry rejects a second run for a workspace that already has one
+/// active, allows a run in a different workspace, `list()` reports both, and
+/// an aborted run stays listed with a terminal phase instead of disappearing.
+#[tokio::test]
+async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
+    let _path_guard = PATH_ENV_LOCK.lock().await;
+
+    let base = std::env::temp_dir().join(format!("run-mgr-registry-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&base);
+    let repo_a = base.join("repo-a");
+    let repo_b = base.join("repo-b");
+    let bin_dir = base.join("bin");
+    init_repo(&repo_a);
+    init_repo(&repo_b);
+    // Sleep long enough that the busy check below and the abort still see it
+    // as active, without dragging the test out.
+    install_slow_fake_claude(&bin_dir, 5);
+
+    let original_path = std::env::var("PATH").unwrap_or_default();
+    std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.display()));
+
+    let request_a = StartRunRequest {
+        workspace: workspace_dto(&repo_a, "regA"),
+        goal: "do nothing".to_string(),
+        base: None,
+        into: None,
+        verify: Some("true".to_string()),
+        refine_cost: 0.0,
+    };
+    let run_a = run::start(request_a)
+        .await
+        .expect("the first run in workspace regA must be accepted");
+
+    // Same workspace, still active: rejected.
+    let request_a_again = StartRunRequest {
+        workspace: workspace_dto(&repo_a, "regA"),
+        goal: "do something else".to_string(),
+        base: None,
+        into: None,
+        verify: Some("true".to_string()),
+        refine_cost: 0.0,
+    };
+    let err = run::start(request_a_again)
+        .await
+        .expect_err("a second run in the same active workspace must be rejected");
+    assert_eq!(err, StartError::WorkspaceBusy);
+
+    // A different workspace is unaffected.
+    let request_b = StartRunRequest {
+        workspace: workspace_dto(&repo_b, "regB"),
+        goal: "do nothing".to_string(),
+        base: None,
+        into: None,
+        verify: Some("true".to_string()),
+        refine_cost: 0.0,
+    };
+    let run_b = run::start(request_b)
+        .await
+        .expect("a run in a different workspace must be accepted");
+
+    let listed = run::list().await;
+    assert!(
+        listed
+            .iter()
+            .any(|s| s.id == run_a && s.workspace == "regA"),
+        "list() must include the run started in workspace regA"
+    );
+    assert!(
+        listed
+            .iter()
+            .any(|s| s.id == run_b && s.workspace == "regB"),
+        "list() must include the run started in workspace regB"
+    );
+
+    run::abort(&run_a).await;
+
+    let listed_after_abort = run::list().await;
+    let summary_a = listed_after_abort
+        .iter()
+        .find(|s| s.id == run_a)
+        .expect("aborted run must still appear in list()");
+    assert_eq!(
+        summary_a.phase,
+        shared::Phase::Failed,
+        "an aborted run must show a terminal phase"
+    );
+
+    std::env::set_var("PATH", original_path);
+    let _ = std::fs::remove_dir_all(&base);
+}
+
 /// Drain `rx` into `last` until the run reaches a terminal phase or the
 /// channel closes.
 async fn wait_for_terminal(last: &mut App, rx: &mut broadcast::Receiver<App>) {
