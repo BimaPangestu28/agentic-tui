@@ -323,8 +323,12 @@ async fn main() -> anyhow::Result<()> {
                 goal = refined;
                 cost
             }
-            refine::RefineOutcome { goal: None, .. } => {
-                println!("run cancelled");
+            refine::RefineOutcome { goal: None, cost } => {
+                if cost > 0.0 {
+                    println!("run cancelled (refine cost ~${cost:.4})");
+                } else {
+                    println!("run cancelled");
+                }
                 return Ok(());
             }
         }
