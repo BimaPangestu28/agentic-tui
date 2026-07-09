@@ -49,7 +49,7 @@ struct RunHandle {
     workspace: String,
     app: Arc<Mutex<App>>,
     tx: broadcast::Sender<App>,
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
     repo: PathBuf,
     completed: Arc<AtomicBool>,
 }
@@ -134,7 +134,7 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
             workspace: workspace_name,
             app,
             tx,
-            task,
+            task: Some(task),
             repo,
             completed,
         },
@@ -199,67 +199,105 @@ fn spawn_pipeline(
 }
 
 /// Abort the run identified by `id` if it exists and has not completed:
-/// cancel its task (killing any in-flight `claude`/`git` child processes),
-/// mark it `Fatal` so subscribers and `list()` see a terminal state, and
-/// clean up epic worktrees, mirroring the TUI's abort path. The handle stays
-/// in the registry (never removed) so the run still appears in `list()`. A
-/// no-op for an unknown or already-finished id.
+/// abort its task and await its unwind (killing any in-flight `claude`/`git`
+/// child processes via `kill_on_drop` as the pipeline future drops), mark it
+/// `Fatal` so subscribers and `list()` see a terminal state, and clean up
+/// epic worktrees, mirroring the TUI's abort path. The handle stays in the
+/// registry (never removed, only its `task` becomes `None`) so the run still
+/// appears in `list()`. A no-op for an unknown or already-finished id.
 pub async fn abort(id: &str) {
-    // Extract what we need under the lock, then release it before the awaits
-    // below, so a slow task teardown or worktree cleanup never blocks other
-    // start, abort, list, or subscribe requests.
+    // Phase 1: find the handle, mark it completed, and take its JoinHandle
+    // and clone what we need, all under the RUNS lock. Release the lock
+    // before the awaits below, so a slow task teardown or worktree cleanup
+    // never blocks other start, abort, list, or subscribe requests.
     let target = {
         let mut guard = RUNS.lock().await;
         let runs = guard.get_or_insert_with(HashMap::new);
-        match runs.get(id) {
-            Some(handle) if !handle.completed.load(Ordering::SeqCst) => Some((
-                handle.task.abort_handle(),
-                handle.app.clone(),
-                handle.tx.clone(),
-                handle.completed.clone(),
-                handle.repo.clone(),
-            )),
+        match runs.get_mut(id) {
+            Some(handle) if !handle.completed.load(Ordering::SeqCst) => {
+                handle.completed.store(true, Ordering::SeqCst);
+                Some((
+                    handle.task.take(),
+                    handle.app.clone(),
+                    handle.tx.clone(),
+                    handle.repo.clone(),
+                ))
+            }
             _ => None,
         }
     };
-    if let Some((abort_handle, app, tx, completed, repo)) = target {
-        abort_handle.abort();
-        {
-            let mut app = app.lock().await;
-            app.apply_stage(StageEvent::Fatal {
-                reason: "run aborted".to_string(),
-            });
-            let _ = tx.send(app.clone());
-        }
-        completed.store(true, Ordering::SeqCst);
-        if let Err(e) = worktree::cleanup_all(&repo).await {
-            eprintln!("warning: could not clean up worktrees after abort: {e}");
-        }
+    let Some((task, app, tx, repo)) = target else {
+        return;
+    };
+
+    // Phase 2: abort the task and await its unwind. This drops the pipeline
+    // future (and its `kill_on_drop` children) before we touch the app or
+    // the worktrees, so cleanup never races a still-running child process.
+    if let Some(task) = task {
+        task.abort();
+        let _ = task.await;
+    }
+
+    // Phase 3: now that the task has actually finished, deterministically
+    // mark the run Failed.
+    {
+        let mut app = app.lock().await;
+        app.apply_stage(StageEvent::Fatal {
+            reason: "run aborted".to_string(),
+        });
+        let _ = tx.send(app.clone());
+    }
+
+    // Phase 4: clean up epic worktrees now that no child process can still
+    // be touching them.
+    if let Err(e) = worktree::cleanup_all(&repo).await {
+        eprintln!("warning: could not clean up worktrees after abort: {e}");
     }
 }
 
 /// The current `App` snapshot and a live receiver of further snapshots for
 /// the run identified by `id`, or `None` if no such run exists.
 pub async fn subscribe(id: &str) -> Option<(App, broadcast::Receiver<App>)> {
-    let mut guard = RUNS.lock().await;
-    let runs = guard.get_or_insert_with(HashMap::new);
-    let handle = runs.get(id)?;
-    let snapshot = handle.app.lock().await.clone();
-    Some((snapshot, handle.tx.subscribe()))
+    // Phase 1: grab the app handle and sender under the RUNS lock.
+    let (app, tx) = {
+        let mut guard = RUNS.lock().await;
+        let runs = guard.get_or_insert_with(HashMap::new);
+        let handle = runs.get(id)?;
+        (handle.app.clone(), handle.tx.clone())
+    };
+    // Phase 2: snapshot the app and subscribe, RUNS already released.
+    let snapshot = app.lock().await.clone();
+    Some((snapshot, tx.subscribe()))
 }
 
 /// A snapshot of every run started this session (active and finished),
 /// sorted by id, for the multi-run dashboard.
 pub async fn list() -> Vec<shared::RunSummary> {
-    let mut guard = RUNS.lock().await;
-    let runs = guard.get_or_insert_with(HashMap::new);
-    let mut out = Vec::with_capacity(runs.len());
-    for handle in runs.values() {
-        let app = handle.app.lock().await;
+    // Phase 1: snapshot the per-run metadata + app handles under the RUNS
+    // lock.
+    let handles: Vec<(String, String, PathBuf, Arc<Mutex<App>>)> = {
+        let mut guard = RUNS.lock().await;
+        let runs = guard.get_or_insert_with(HashMap::new);
+        runs.values()
+            .map(|h| {
+                (
+                    h.id.clone(),
+                    h.workspace.clone(),
+                    h.repo.clone(),
+                    h.app.clone(),
+                )
+            })
+            .collect()
+    };
+    // Phase 2: build summaries by locking each app briefly, RUNS already
+    // released.
+    let mut out = Vec::with_capacity(handles.len());
+    for (id, workspace, repo, app) in handles {
+        let app = app.lock().await;
         out.push(shared::RunSummary {
-            id: handle.id.clone(),
-            workspace: handle.workspace.clone(),
-            path: handle.repo.to_string_lossy().to_string(),
+            id,
+            workspace,
+            path: repo.to_string_lossy().to_string(),
             goal: app.goal.clone(),
             phase: app.phase,
             total_cost: app.total_cost,
