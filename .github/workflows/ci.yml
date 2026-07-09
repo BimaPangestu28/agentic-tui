@@ -7,7 +7,7 @@ on:
 
 jobs:
   verify:
-    name: fmt-check, clippy, test
+    name: fmt-check, clippy, test, web
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -16,11 +16,20 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+          targets: wasm32-unknown-unknown
 
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      - name: Install trunk
+        run: cargo install --locked trunk
+
+      - name: Build the web UI
+        run: cd crates/web && trunk build --release
+
       # `make verify` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D
-      # warnings`, and `cargo test`, matching the local pre-commit gate exactly.
+      # warnings`, and `cargo test` on the native crates (server and shared),
+      # plus `cargo check -p web --target wasm32-unknown-unknown`, matching
+      # the local pre-commit gate exactly.
       - name: Run make verify
         run: make verify

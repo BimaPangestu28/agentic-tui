@@ -5,7 +5,7 @@ edition = "2021"
 description = "A Rust orchestrator with an embedded web UI that plans a goal into epics and drives worktree-isolated Claude Code sessions to implement, verify, and merge them."
 license = "MIT"
 repository = "https://github.com/BimaPangestu28/agentic-tui"
-readme = "README.md"
+readme = "../../README.md"
 keywords = ["orchestrator", "claude", "web", "agentic"]
 categories = ["command-line-utilities", "development-tools"]
 
