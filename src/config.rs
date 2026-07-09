@@ -23,6 +23,19 @@ pub const EPIC_TOOLS: &str = "Read,Glob,Grep,Edit,Write,Bash,WebSearch,WebFetch,
 pub const PLAN_MAX_TURNS: u32 = 20;
 pub const EPIC_MAX_TURNS: u32 = 40;
 
+// Refine stage. Sharpening the goal does not need opus, so it defaults to
+// sonnet. Read-only plus Write (for the result file), no Edit or Bash.
+#[allow(dead_code)]
+pub const MODEL_REFINE: &str = "sonnet";
+#[allow(dead_code)]
+pub const REFINE_TOOLS: &str = "Read,Glob,Grep,Write,WebSearch,WebFetch,Skill";
+#[allow(dead_code)]
+pub const REFINE_MAX_TURNS: u32 = 12;
+#[allow(dead_code)]
+pub const REFINE_BUDGET_USD: f64 = 0.20;
+#[allow(dead_code)]
+pub const REFINE_MAX_QUESTIONS: usize = 5;
+
 // How many epics may run in parallel.
 pub const MAX_PARALLEL_EPICS: usize = 3;
 
@@ -51,6 +64,61 @@ not create cycles. Do not write any other file.\n\
 Step 4. After writing, print the number of epics and a one line summary.",
         style = STYLE,
         goal = goal,
+        out = out_path,
+    )
+}
+
+/// Prompt for the first refine pass. Claude reads the repo, rewrites the goal to
+/// be specific, and lists clarifying questions, writing them to a JSON file.
+#[allow(dead_code)]
+pub fn refine_questions_prompt(goal: &str, out_path: &str) -> String {
+    format!(
+        "You are a Tech Lead sharpening a goal before planning work on a \
+repository. {style}\n\n\
+GOAL:\n{goal}\n\n\
+Step 1. Understand this repository with Glob and Grep so your rewrite and \
+questions fit the real code.\n\
+Step 2. Rewrite the goal so it is specific and actionable.\n\
+Step 3. List at most {max} clarifying questions whose answers would materially \
+change the plan. Ask only genuinely useful questions. If the goal is already \
+clear, use an empty list.\n\
+Step 4. Write ONLY a JSON file to {out} with this exact shape and nothing else:\n\
+{{\"refined_goal\":\"...\",\"questions\":[\"...\"]}}\n\
+Do not write any other file.",
+        style = STYLE,
+        goal = goal,
+        max = REFINE_MAX_QUESTIONS,
+        out = out_path,
+    )
+}
+
+/// Prompt for the second refine pass. Given the original goal and the user's
+/// answers, produce one final goal, writing it to the same JSON file.
+#[allow(dead_code)]
+pub fn refine_finalize_prompt(goal: &str, answers: &[(String, String)], out_path: &str) -> String {
+    let qa: String = answers
+        .iter()
+        .map(|(question, answer)| {
+            let answer = if answer.is_empty() {
+                "(no answer)"
+            } else {
+                answer
+            };
+            format!("Q: {question}\nA: {answer}\n")
+        })
+        .collect();
+    format!(
+        "You are a Tech Lead finalizing a goal before planning. {style}\n\n\
+ORIGINAL GOAL:\n{goal}\n\n\
+CLARIFICATIONS:\n{qa}\n\
+Produce one specific, actionable goal statement that folds in the answers \
+above. Write ONLY a JSON file to {out} with this exact shape and nothing \
+else:\n\
+{{\"refined_goal\":\"...\",\"questions\":[]}}\n\
+Do not write any other file.",
+        style = STYLE,
+        goal = goal,
+        qa = qa,
         out = out_path,
     )
 }
