@@ -40,7 +40,7 @@ run: ## Run the server (starts a loopback server and opens the browser)
 	$(CARGO) run -p $(BIN)
 
 .PHONY: check
-check: ## Type-check the native crates without producing a binary
+check: web ## Build the web UI, then type-check the native crates without producing a binary
 	$(CARGO) check
 
 .PHONY: fmt
@@ -52,11 +52,11 @@ fmt-check: ## Verify formatting without modifying files
 	$(CARGO) fmt --check
 
 .PHONY: lint
-lint: ## Run clippy with warnings denied on the native crates
+lint: web ## Build the web UI, then run clippy with warnings denied on the native crates
 	$(CARGO) clippy --all-targets -- -D warnings
 
 .PHONY: test
-test: ## Run the test suite for the native crates
+test: web ## Build the web UI, then run the test suite for the native crates
 	$(CARGO) test
 
 .PHONY: web-check
@@ -64,7 +64,7 @@ web-check: ## Type-check the web crate for its wasm32 target
 	$(CARGO) check -p web --target wasm32-unknown-unknown
 
 .PHONY: verify
-verify: fmt-check lint test web-check ## Run formatting, lint, test, and web wasm checks
+verify: web fmt-check lint test web-check ## Build the web UI, then run formatting, lint, test, and web wasm checks
 
 .PHONY: clean
 clean: ## Remove build artifacts

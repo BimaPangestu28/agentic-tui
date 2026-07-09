@@ -5,7 +5,6 @@
 //! `std::process`. It must compile for `wasm32-unknown-unknown`.
 
 use std::collections::{HashMap, VecDeque};
-use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -110,13 +109,6 @@ pub struct App {
     pub total_cost: f64,
     pub budget: f64,
     pub error: Option<String>,
-    pub spinner: usize,
-    // Wall-clock anchor used only to derive `elapsed_secs` in `tick`. Not
-    // meaningful across a wire round trip, so it is skipped by serde and
-    // reset to "now" on deserialize.
-    #[serde(skip, default = "Instant::now")]
-    pub started: Instant,
-    pub elapsed_secs: u64,
 }
 
 impl App {
@@ -130,16 +122,6 @@ impl App {
             total_cost: 0.0,
             budget,
             error: None,
-            spinner: 0,
-            started: Instant::now(),
-            elapsed_secs: 0,
-        }
-    }
-
-    pub fn tick(&mut self) {
-        self.spinner = self.spinner.wrapping_add(1);
-        if self.phase == Phase::Planning || self.phase == Phase::Implementing {
-            self.elapsed_secs = self.started.elapsed().as_secs();
         }
     }
 
