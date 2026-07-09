@@ -81,7 +81,12 @@ pub fn AppBar() -> impl IntoView {
                                 <A attr:class="runs-menu-item" href=href>
                                     <span class="phase-dot"></span>
                                     <span class="col">
-                                        <span class="ws">{run.workspace.clone()}</span>
+                                        <span class="ws">
+                                            {run.workspace.clone()}
+                                            <span class="ws-repos">
+                                                {format!(" \u{00b7} {} repos", run.repos.len())}
+                                            </span>
+                                        </span>
                                         <span class="goal-snip">{run.goal.clone()}</span>
                                     </span>
                                     <span class="mini-budget">

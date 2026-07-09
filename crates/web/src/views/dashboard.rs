@@ -206,7 +206,13 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
                             <span class="phase-dot"></span>
                             <div class="col">
                                 <div class="rc-goal">{run.goal.clone()}</div>
-                                <div class="rc-meta">{format!("{} epics", run.epics.len())}</div>
+                                <div class="rc-meta">
+                                    {format!(
+                                        "{} epics \u{00b7} {} repos",
+                                        run.epics.len(),
+                                        run.repos.len(),
+                                    )}
+                                </div>
                             </div>
                             <div class="rc-right">
                                 <span class=format!("run-phase {class}")>

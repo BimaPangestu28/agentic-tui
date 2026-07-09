@@ -922,6 +922,11 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   font-size: var(--fs-xs);
   color: var(--text-dim);
 }
+.kanban-card-repo {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  color: var(--text-dim);
+}
 .kanban-card-status {
   display: inline-flex;
   align-items: center;
@@ -1029,6 +1034,13 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
 .final-report > h3 { font-size: var(--fs-lg); display: flex; align-items: center; gap: var(--sp-2); }
 .final-report > h3::before { content: "\2713"; color: var(--st-done); }   /* ✓ */
 
+.report-group { display: flex; flex-direction: column; gap: var(--sp-2); }
+.report-group-heading {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  font-weight: 600;
+  color: var(--text-muted);
+}
 .report-rows { display: flex; flex-direction: column; }
 .report-row {
   display: grid;
@@ -1309,6 +1321,7 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
 }
 .runs-menu-item:hover { background: var(--bg-2); }
 .runs-menu-item .ws { font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text); font-weight: 600; }
+.runs-menu-item .ws .ws-repos { color: var(--text-dim); font-weight: 500; }
 .runs-menu-item .goal-snip {
   font-size: var(--fs-xs); color: var(--text-dim);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;

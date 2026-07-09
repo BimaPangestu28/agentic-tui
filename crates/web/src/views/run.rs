@@ -68,6 +68,8 @@ fn epic_card(epic: EpicView, hold_label: Option<String>) -> impl IntoView {
             {hold_label.map(|label| view! { <span class="kanban-card-hold">{label}</span> })}
             <div class="kanban-card-meta">
                 <span class="kanban-card-id">{epic.id.clone()}</span>
+                {(!epic.repo.is_empty())
+                    .then(|| view! { <span class="kanban-card-repo">{epic.repo.clone()}</span> })}
                 <span class="kanban-card-status">{status_label(epic.status)}</span>
             </div>
         </div>
@@ -140,22 +142,68 @@ fn log_line_view(line: String) -> AnyView {
     }
 }
 
+/// One report row: an epic's id, title, status pill, and cost.
+fn report_row(epic: &EpicView) -> impl IntoView {
+    view! {
+        <div class="report-row">
+            <span class="report-id">{epic.id.clone()}</span>
+            <span class="report-title">{epic.title.clone()}</span>
+            <span class=report_status_class(epic.status)>{status_label(epic.status)}</span>
+            <span class="report-cost">{format!("${:.2}", epic.cost)}</span>
+        </div>
+    }
+}
+
+/// Groups epics by repo, preserving each repo's first-seen order. Epics with
+/// no repo tag are collected under one group and moved to the end, since an
+/// empty repo carries no ordering signal of its own.
+fn group_epics_by_repo(epics: &[EpicView]) -> Vec<(String, Vec<EpicView>)> {
+    let mut groups: Vec<(String, Vec<EpicView>)> = Vec::new();
+    for epic in epics {
+        match groups.iter_mut().find(|(repo, _)| repo == &epic.repo) {
+            Some((_, group_epics)) => group_epics.push(epic.clone()),
+            None => groups.push((epic.repo.clone(), vec![epic.clone()])),
+        }
+    }
+    if let Some(idx) = groups.iter().position(|(repo, _)| repo.is_empty()) {
+        let unassigned = groups.remove(idx);
+        groups.push(unassigned);
+    }
+    groups
+}
+
 /// The final report shown once the run reaches `Phase::Done` or `Phase::Failed`.
+/// Rows are grouped by repo so a multi-repo run reads as one section per repo,
+/// each followed by a note that the repo's integration branch holds its
+/// merged work.
 fn final_report(app: &App) -> impl IntoView {
     let any_merged = app
         .epics
         .iter()
         .any(|epic| epic.status == EpicStatus::Merged);
-    let rows: Vec<_> = app
-        .epics
-        .iter()
-        .map(|epic| {
+
+    let groups: Vec<_> = group_epics_by_repo(&app.epics)
+        .into_iter()
+        .map(|(repo, epics)| {
+            let heading = if repo.is_empty() {
+                "No repo assigned".to_string()
+            } else {
+                repo
+            };
+            let group_merged = epics.iter().any(|epic| epic.status == EpicStatus::Merged);
+            let rows: Vec<_> = epics.iter().map(report_row).collect();
             view! {
-                <div class="report-row">
-                    <span class="report-id">{epic.id.clone()}</span>
-                    <span class="report-title">{epic.title.clone()}</span>
-                    <span class=report_status_class(epic.status)>{status_label(epic.status)}</span>
-                    <span class="report-cost">{format!("${:.2}", epic.cost)}</span>
+                <div class="report-group">
+                    <h4 class="report-group-heading">{heading}</h4>
+                    <div class="report-rows">{rows}</div>
+                    {group_merged
+                        .then(|| {
+                            view! {
+                                <div class="report-hint">
+                                    "Merged epics are on this repo's integration branch."
+                                </div>
+                            }
+                        })}
                 </div>
             }
         })
@@ -165,7 +213,7 @@ fn final_report(app: &App) -> impl IntoView {
         <div class="final-report">
             <h3>"Run finished"</h3>
             {app.error.clone().map(|err| view! { <p class="error">{err}</p> })}
-            <div class="report-rows">{rows}</div>
+            {groups}
             <div class="report-total">
                 <span>"Total cost"</span>
                 <span class="amount">{format!("${:.4}", app.total_cost)}</span>
@@ -242,6 +290,18 @@ pub fn Run() -> impl IntoView {
                         0.0
                     };
                     let is_finished = matches!(snapshot.phase, Phase::Done | Phase::Failed);
+                    // The run snapshot has no repo list of its own; derive the
+                    // repo count from the distinct non-empty repos tagged on
+                    // its epics rather than fabricate one.
+                    let repo_count = {
+                        let mut seen: Vec<&str> = Vec::new();
+                        for epic in &snapshot.epics {
+                            if !epic.repo.is_empty() && !seen.contains(&epic.repo.as_str()) {
+                                seen.push(&epic.repo);
+                            }
+                        }
+                        seen.len()
+                    };
                     let columns: Vec<_> = COLUMNS
                         .into_iter()
                         .map(|(column, label)| {
@@ -264,7 +324,11 @@ pub fn Run() -> impl IntoView {
                         <div class="run-header">
                             <div>
                                 <div class="run-goal">{snapshot.goal.clone()}</div>
-                                <div class="run-workspace">{snapshot.workspace.clone()}</div>
+                                <div class="run-workspace">
+                                    {snapshot.workspace.clone()}
+                                    {(repo_count > 0)
+                                        .then(|| format!(" \u{00b7} {repo_count} repos"))}
+                                </div>
                             </div>
                             {(!is_finished)
                                 .then(|| {
