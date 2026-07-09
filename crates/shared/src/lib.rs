@@ -243,6 +243,34 @@ impl App {
     }
 }
 
+/// Wire form of a workspace entry, used at the HTTP API boundary so the
+/// web UI does not need to depend on the server's native `Workspace` type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceDto {
+    pub name: String,
+    pub path: String,
+    pub base: Option<String>,
+    pub integration: Option<String>,
+}
+
+/// Body of `POST /api/workspaces/scan`: the directory to scan for repos.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanRequest {
+    pub root: String,
+}
+
+/// Response of `POST /api/workspaces/scan`: the repos found under `root`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanResponse {
+    pub repos: Vec<WorkspaceDto>,
+}
+
+/// Body of `POST /api/workspaces`: the full workspace list to persist.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SaveRequest {
+    pub workspaces: Vec<WorkspaceDto>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,5 +358,35 @@ mod tests {
                 serde_json::from_str(&json).expect("StageEvent must deserialize");
             assert_eq!(format!("{event:?}"), format!("{back:?}"));
         }
+    }
+
+    #[test]
+    fn workspace_dto_round_trips_through_json() {
+        let dto = WorkspaceDto {
+            name: "greentic".to_string(),
+            path: "/tmp/greentic".to_string(),
+            base: Some("develop".to_string()),
+            integration: None,
+        };
+        let json = serde_json::to_string(&dto).expect("WorkspaceDto must serialize");
+        let back: WorkspaceDto =
+            serde_json::from_str(&json).expect("WorkspaceDto must deserialize");
+        assert_eq!(dto, back);
+    }
+
+    #[test]
+    fn scan_response_round_trips_through_json() {
+        let response = ScanResponse {
+            repos: vec![WorkspaceDto {
+                name: "repoA".to_string(),
+                path: "/tmp/repoA".to_string(),
+                base: None,
+                integration: None,
+            }],
+        };
+        let json = serde_json::to_string(&response).expect("ScanResponse must serialize");
+        let back: ScanResponse =
+            serde_json::from_str(&json).expect("ScanResponse must deserialize");
+        assert_eq!(response.repos, back.repos);
     }
 }

@@ -233,6 +233,14 @@ fn workspaces_from_paths(paths: Vec<PathBuf>) -> Vec<Workspace> {
         .collect()
 }
 
+/// Guards tests (here and in `http.rs`) that mutate the process-wide `HOME`
+/// env var, since `cargo test` runs tests in parallel within one process and
+/// an unguarded mutation would let two such tests race on the same variable.
+/// A `tokio::sync::Mutex` is used, not `std::sync::Mutex`, so the async tests
+/// in `http.rs` can hold the guard across an `.await` point.
+#[cfg(test)]
+pub(crate) static HOME_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +264,7 @@ path = "/tmp/portfolio"
 
     #[test]
     fn expands_a_leading_tilde_to_the_home_directory() {
+        let _guard = HOME_ENV_LOCK.blocking_lock();
         std::env::set_var("HOME", "/home/tester");
         let expanded = expand_tilde("~/Works/greentic");
         assert_eq!(expanded, PathBuf::from("/home/tester/Works/greentic"));
