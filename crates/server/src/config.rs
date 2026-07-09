@@ -6,12 +6,6 @@ pub const PERMISSION_MODE: &str = "acceptEdits";
 const STYLE: &str = "Write directly and concisely. Do not use em dashes. Do \
 not use contractions in English prose. Avoid AI-sounding filler.";
 
-// Global cost brake: once accumulated cost reaches this, the orchestrator stops
-// starting new epics. Epics already in flight still finish.
-pub const GLOBAL_BUDGET_USD: f64 = 10.0;
-// Budget for a single stage (plan or one epic).
-pub const EPIC_BUDGET_USD: f64 = 2.0;
-
 // Models. Plan quality drives epic accuracy, so plan defaults to opus.
 pub const MODEL_PLAN: &str = "opus";
 pub const MODEL_EPIC: &str = "sonnet";
@@ -28,7 +22,6 @@ pub const EPIC_MAX_TURNS: u32 = 40;
 pub const MODEL_REFINE: &str = "sonnet";
 pub const REFINE_TOOLS: &str = "Read,Glob,Grep,Write,WebSearch,WebFetch,Skill";
 pub const REFINE_MAX_TURNS: u32 = 12;
-pub const REFINE_BUDGET_USD: f64 = 0.20;
 pub const REFINE_MAX_QUESTIONS: usize = 5;
 
 // How many epics may run in parallel.

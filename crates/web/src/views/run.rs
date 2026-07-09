@@ -60,18 +60,68 @@ fn column_epics(epics: &[EpicView], column: KanbanColumn) -> Vec<EpicView> {
 }
 
 /// One kanban card. In the Todo column, a pending epic whose dependencies have
-/// not all merged yet carries an "on hold" hint listing what it waits on.
-fn epic_card(epic: EpicView, hold_label: Option<String>) -> impl IntoView {
+/// not all merged yet carries an "on hold" hint listing what it waits on. A
+/// blocked epic shows why it is stuck; when the run has finished and the epic
+/// has work of its own to redo (Failed or Conflict), it also offers a Retry
+/// button that re-runs just that epic.
+fn epic_card(
+    epic: EpicView,
+    hold_label: Option<String>,
+    run_id: String,
+    retry_enabled: bool,
+) -> impl IntoView {
+    let can_retry =
+        retry_enabled && matches!(epic.status, EpicStatus::Failed | EpicStatus::Conflict);
+    let reason = epic.reason.clone();
+    let epic_id = epic.id.clone();
+
+    let retrying = RwSignal::new(false);
+    let retry_error = RwSignal::new(None::<String>);
+    let on_retry = move |_| {
+        if retrying.get_untracked() {
+            return;
+        }
+        retrying.set(true);
+        retry_error.set(None);
+        let run_id = run_id.clone();
+        let epic_id = epic_id.clone();
+        spawn_local(async move {
+            if let Err(err) = api::retry_epic(&run_id, &epic_id).await {
+                retry_error.set(Some(err));
+            }
+            retrying.set(false);
+        });
+    };
+
     view! {
         <div class="kanban-card">
             <div class="kanban-card-title">{epic.title.clone()}</div>
             {hold_label.map(|label| view! { <span class="kanban-card-hold">{label}</span> })}
+            {reason.map(|text| view! { <div class="kanban-card-reason">{text}</div> })}
             <div class="kanban-card-meta">
                 <span class="kanban-card-id">{epic.id.clone()}</span>
                 {(!epic.repo.is_empty())
                     .then(|| view! { <span class="kanban-card-repo">{epic.repo.clone()}</span> })}
                 <span class="kanban-card-status">{status_label(epic.status)}</span>
             </div>
+            {can_retry
+                .then(|| {
+                    view! {
+                        <div class="kanban-card-actions">
+                            <button
+                                type="button"
+                                class="btn-retry"
+                                disabled=move || retrying.get()
+                                on:click=on_retry
+                            >
+                                {move || if retrying.get() { "Retrying..." } else { "Retry" }}
+                            </button>
+                        </div>
+                    }
+                })}
+            {move || {
+                retry_error.get().map(|err| view! { <p class="kanban-card-error">{err}</p> })
+            }}
         </div>
     }
 }
@@ -82,6 +132,8 @@ fn kanban_column_view(
     label: &'static str,
     epics: Vec<EpicView>,
     status_by_id: HashMap<String, EpicStatus>,
+    run_id: String,
+    retry_enabled: bool,
 ) -> impl IntoView {
     let count = epics.len();
     let cards: Vec<_> = epics
@@ -103,7 +155,7 @@ fn kanban_column_view(
                 } else {
                     None
                 };
-            epic_card(epic, hold_label)
+            epic_card(epic, hold_label, run_id.clone(), retry_enabled)
         })
         .collect();
     view! {
@@ -284,11 +336,6 @@ pub fn Run() -> impl IntoView {
                         .iter()
                         .map(|epic| (epic.id.clone(), epic.status))
                         .collect();
-                    let budget_pct = if snapshot.budget > 0.0 {
-                        (snapshot.total_cost / snapshot.budget * 100.0).clamp(0.0, 100.0)
-                    } else {
-                        0.0
-                    };
                     let is_finished = matches!(snapshot.phase, Phase::Done | Phase::Failed);
                     // The run snapshot has no repo list of its own; derive the
                     // repo count from the distinct non-empty repos tagged on
@@ -310,6 +357,8 @@ pub fn Run() -> impl IntoView {
                                 label,
                                 column_epics(&snapshot.epics, column),
                                 status_by_id.clone(),
+                                run_id.clone(),
+                                is_finished,
                             )
                         })
                         .collect();
@@ -347,22 +396,11 @@ pub fn Run() -> impl IntoView {
                                         </div>
                                     }
                                 })}
-                            <div class="budget">
-                                <div class="budget-text">
-                                    <span>
-                                        <span class="spent">
-                                            {format!("${:.4}", snapshot.total_cost)}
-                                        </span>
-                                        {format!(" / ${:.4}", snapshot.budget)}
-                                    </span>
-                                    <span>{format!("{budget_pct:.1}% of budget")}</span>
-                                </div>
-                                <div class="budget-bar">
-                                    <div
-                                        class="budget-bar-fill"
-                                        style=format!("width: {budget_pct}%")
-                                    ></div>
-                                </div>
+                            <div class="run-cost">
+                                <span class="spent">
+                                    {format!("${:.4}", snapshot.total_cost)}
+                                </span>
+                                <span class="run-cost-label">" spent"</span>
                             </div>
                         </div>
                         <div class="kanban-board">{columns}</div>

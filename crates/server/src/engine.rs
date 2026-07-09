@@ -18,7 +18,6 @@ pub struct StageSpec<'a> {
     pub model: &'a str,
     pub tools: &'a str,
     pub max_turns: u32,
-    pub budget_usd: f64,
     pub prompt: &'a str,
 }
 
@@ -34,18 +33,20 @@ pub struct Outcome {
 enum StageMessage {
     Init { model: String },
     Assistant { preview: String },
-    Tool { name: String },
+    Tool { name: String, input: String },
     Result { cost: f64, ok: bool },
 }
 
-/// Preview text sent to the UI for an assistant text block: the first non-empty
-/// line, capped at 120 characters. Kept separate so the cap is testable.
+/// Full assistant text sent to the UI for a text block: every line joined into
+/// one string with internal whitespace collapsed, so the web view can wrap it
+/// naturally without an artificial length cap. Returns `None` for blank blocks.
+/// Kept separate so the normalization is testable.
 fn assistant_preview(text: &str) -> Option<String> {
-    let first = text.trim().lines().next().unwrap_or("").trim();
-    if first.is_empty() {
+    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
         return None;
     }
-    Some(first.chars().take(120).collect())
+    Some(normalized)
 }
 
 /// Decode one line of `claude`'s stream-json output into zero or more messages.
@@ -87,8 +88,13 @@ fn parse_stage_line(line: &str) -> Vec<StageMessage> {
                     }
                     Some("tool_use") => {
                         if let Some(name) = block.get("name").and_then(|n| n.as_str()) {
+                            let input = match block.get("input") {
+                                Some(value) if !value.is_null() => value.to_string(),
+                                _ => String::new(),
+                            };
                             out.push(StageMessage::Tool {
                                 name: name.to_string(),
+                                input,
                             });
                         }
                     }
@@ -133,8 +139,6 @@ pub async fn run_stage(
         .arg(config::PERMISSION_MODE)
         .arg("--max-turns")
         .arg(spec.max_turns.to_string())
-        .arg("--max-budget-usd")
-        .arg(format!("{:.2}", spec.budget_usd))
         .current_dir(spec.cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -170,10 +174,11 @@ pub async fn run_stage(
                         text: preview,
                     });
                 }
-                StageMessage::Tool { name } => {
+                StageMessage::Tool { name, input } => {
                     let _ = tx.send(StageEvent::StageTool {
                         tag: tag.to_string(),
                         name,
+                        input,
                     });
                 }
                 StageMessage::Result {
@@ -231,24 +236,24 @@ mod tests {
     }
 
     #[test]
-    fn assistant_text_preview_keeps_first_line_only() {
+    fn assistant_text_joins_all_lines_with_collapsed_whitespace() {
         let line = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"first line\nsecond line"}]}}"#;
         assert_eq!(
             parse_stage_line(line),
             vec![StageMessage::Assistant {
-                preview: "first line".to_string()
+                preview: "first line second line".to_string()
             }]
         );
     }
 
     #[test]
-    fn assistant_preview_is_capped_at_120_chars() {
+    fn assistant_text_is_not_truncated() {
         let long = "x".repeat(200);
         let line = format!(
             r#"{{"type":"assistant","message":{{"content":[{{"type":"text","text":"{long}"}}]}}}}"#
         );
         match parse_stage_line(&line).as_slice() {
-            [StageMessage::Assistant { preview }] => assert_eq!(preview.chars().count(), 120),
+            [StageMessage::Assistant { preview }] => assert_eq!(preview.chars().count(), 200),
             other => panic!("expected one assistant message, got {other:?}"),
         }
     }
@@ -274,12 +279,28 @@ mod tests {
                     preview: "looking around".to_string()
                 },
                 StageMessage::Tool {
-                    name: "Grep".to_string()
+                    name: "Grep".to_string(),
+                    input: String::new()
                 },
                 StageMessage::Tool {
-                    name: "Read".to_string()
+                    name: "Read".to_string(),
+                    input: String::new()
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn tool_use_carries_its_input_as_compact_json() {
+        let line = r#"{"type":"assistant","message":{"content":[
+            {"type":"tool_use","name":"Bash","input":{"command":"git log --oneline -20"}}
+        ]}}"#;
+        assert_eq!(
+            parse_stage_line(line),
+            vec![StageMessage::Tool {
+                name: "Bash".to_string(),
+                input: r#"{"command":"git log --oneline -20"}"#.to_string()
+            }]
         );
     }
 

@@ -99,7 +99,6 @@ async fn a_two_repo_plan_merges_each_epic_into_its_own_integration_branch() {
         repos,
         goal: "spread work".to_string(),
         default_verify: "true".to_string(),
-        budget_usd: 100.0,
         initial_cost: 0.0,
     };
 

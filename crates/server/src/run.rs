@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use shared::{App, StageEvent};
+use shared::{App, EpicStatus, StageEvent};
 
 use crate::workspace::{Repo, Workspace};
 use crate::{config, orchestrator, run_pipeline, workspace, worktree};
@@ -43,6 +43,28 @@ impl StartError {
     }
 }
 
+/// Why `retry` rejected a request: no such run (404), the run is still in
+/// flight (409), or the epic is not in a retryable blocked state (400).
+#[derive(Debug, Clone, PartialEq)]
+pub enum RetryError {
+    NotFound,
+    RunActive,
+    NotBlocked,
+}
+
+impl RetryError {
+    pub fn message(&self) -> String {
+        match self {
+            RetryError::NotFound => "no such run".to_string(),
+            RetryError::RunActive => {
+                "the run is still in flight; wait for it to finish before retrying an epic"
+                    .to_string()
+            }
+            RetryError::NotBlocked => "only a failed or conflicted epic can be retried".to_string(),
+        }
+    }
+}
+
 /// One run in the registry, active or finished. Finished runs are kept
 /// around (not removed) so they still show up in `list()`.
 struct RunHandle {
@@ -54,6 +76,13 @@ struct RunHandle {
     repo_paths: Vec<PathBuf>,
     repo_names: Vec<String>,
     completed: Arc<AtomicBool>,
+    // Context to re-run a single blocked epic after the run finished: where the
+    // persisted plan lives, the resolved repos, and the goal/verify the run
+    // used. The plan itself is re-read from `.agentic-plan.json` at retry time.
+    plan_cwd: PathBuf,
+    repos: Arc<HashMap<String, orchestrator::RepoRun>>,
+    goal: String,
+    default_verify: String,
 }
 
 /// Every run started this session, keyed by id. `Mutex::const_new` cannot
@@ -159,17 +188,24 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let app = Arc::new(Mutex::new(App::new(
         req.goal.clone(),
         workspace_name.clone(),
-        config::GLOBAL_BUDGET_USD,
     )));
     let (tx, _rx) = broadcast::channel::<App>(SNAPSHOT_CHANNEL_CAPACITY);
     let completed = Arc::new(AtomicBool::new(false));
+
+    // Keep clones for the retry context before `spawn_pipeline` consumes the
+    // originals. `repos` is shared behind an `Arc` so the retry path reads the
+    // same resolved repos the run used.
+    let repos = Arc::new(repos);
+    let goal_for_retry = req.goal.clone();
+    let verify_for_retry = verify_cmd.clone();
+    let plan_cwd_for_retry = plan_cwd.clone();
 
     let task = spawn_pipeline(
         app.clone(),
         tx.clone(),
         completed.clone(),
         plan_cwd,
-        repos,
+        (*repos).clone(),
         req.goal,
         verify_cmd,
         req.refine_cost,
@@ -186,6 +222,10 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
             repo_paths,
             repo_names,
             completed,
+            plan_cwd: plan_cwd_for_retry,
+            repos,
+            goal: goal_for_retry,
+            default_verify: verify_for_retry,
         },
     );
 
@@ -242,6 +282,122 @@ fn spawn_pipeline(
         };
 
         tokio::join!(pipeline_fut, forward_fut);
+    })
+}
+
+/// Re-run a single blocked epic of a finished run. Rejects with `NotFound` for
+/// an unknown run, `RunActive` while the run is still in flight, or
+/// `NotBlocked` if the epic is not currently Failed or Conflict. On success it
+/// flips the run back to active (so no new run starts on the workspace and
+/// `abort` can tear the retry down) and spawns a task that re-runs just that
+/// epic, applying its events to the same `App` all subscribers already follow.
+pub async fn retry(run_id: &str, epic_id: &str) -> Result<(), RetryError> {
+    // Everything happens under one RUNS lock so validating, claiming the run,
+    // and storing the retry task are atomic: no start/abort/retry can race in
+    // the window between them. The only await inside is a brief `app` lock,
+    // which no path holds while waiting on RUNS, so it cannot deadlock.
+    let mut guard = RUNS.lock().await;
+    let runs = guard.get_or_insert_with(HashMap::new);
+    let handle = runs.get_mut(run_id).ok_or(RetryError::NotFound)?;
+    if !handle.completed.load(Ordering::SeqCst) {
+        return Err(RetryError::RunActive);
+    }
+
+    // The epic must be blocked with work of its own to redo. A Skipped epic
+    // only waits on a failed dependency, so retrying it directly is a no-op;
+    // the user retries the dependency instead.
+    let initial_cost = {
+        let app = handle.app.lock().await;
+        let epic = app
+            .epics
+            .iter()
+            .find(|candidate| candidate.id == epic_id)
+            .ok_or(RetryError::NotBlocked)?;
+        if !matches!(epic.status, EpicStatus::Failed | EpicStatus::Conflict) {
+            return Err(RetryError::NotBlocked);
+        }
+        app.total_cost
+    };
+
+    handle.completed.store(false, Ordering::SeqCst);
+    let task = spawn_retry(
+        handle.app.clone(),
+        handle.tx.clone(),
+        handle.completed.clone(),
+        handle.plan_cwd.clone(),
+        handle.repos.clone(),
+        handle.goal.clone(),
+        handle.default_verify.clone(),
+        epic_id.to_string(),
+        initial_cost,
+    );
+    handle.task = Some(task);
+    Ok(())
+}
+
+/// Spawn one task that re-reads the persisted plan and re-runs a single epic,
+/// forwarding its events into the run's `App` and broadcasting each snapshot,
+/// then marks the run completed when the epic's event channel closes. Mirrors
+/// `spawn_pipeline` so abort tears it down the same way.
+#[allow(clippy::too_many_arguments)]
+fn spawn_retry(
+    app: Arc<Mutex<App>>,
+    tx: broadcast::Sender<App>,
+    completed: Arc<AtomicBool>,
+    plan_cwd: PathBuf,
+    repos: Arc<HashMap<String, orchestrator::RepoRun>>,
+    goal: String,
+    default_verify: String,
+    epic_id: String,
+    initial_cost: f64,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let (pipeline_tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();
+
+        let pipeline_fut = async move {
+            let plan_path = plan_cwd.join(".agentic-plan.json");
+            let loaded = std::fs::read_to_string(&plan_path)
+                .map_err(|e| anyhow::anyhow!("could not read the saved plan: {e}"))
+                .and_then(|text| crate::plan::parse_plan(&text));
+            match loaded {
+                Ok(plan) => {
+                    if let Err(e) = orchestrator::retry_epic(
+                        &plan,
+                        &epic_id,
+                        &repos,
+                        &goal,
+                        &default_verify,
+                        initial_cost,
+                        pipeline_tx.clone(),
+                    )
+                    .await
+                    {
+                        let _ = pipeline_tx.send(StageEvent::StageLog {
+                            tag: epic_id.clone(),
+                            line: format!("retry failed: {e}"),
+                        });
+                    }
+                }
+                Err(e) => {
+                    let _ = pipeline_tx.send(StageEvent::StageLog {
+                        tag: epic_id.clone(),
+                        line: format!("retry failed: {e}"),
+                    });
+                }
+            }
+            // `pipeline_tx` and its clone drop here, closing the channel.
+        };
+
+        let forward_fut = async {
+            while let Some(stage) = rx.recv().await {
+                let mut app = app.lock().await;
+                app.apply_stage(stage);
+                let _ = tx.send(app.clone());
+            }
+        };
+
+        tokio::join!(pipeline_fut, forward_fut);
+        completed.store(true, Ordering::SeqCst);
     })
 }
 
@@ -358,7 +514,6 @@ pub async fn list() -> Vec<shared::RunSummary> {
             goal: app.goal.clone(),
             phase: app.phase,
             total_cost: app.total_cost,
-            budget: app.budget,
             epics: app.epics.clone(),
             repos,
         });

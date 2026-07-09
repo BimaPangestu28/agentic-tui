@@ -20,7 +20,7 @@ use shared::{
 use tokio::sync::broadcast;
 
 use crate::refine;
-use crate::run::{self, StartError};
+use crate::run::{self, RetryError, StartError};
 use crate::workspace::{self, Repo, Workspace};
 
 #[derive(RustEmbed)]
@@ -118,6 +118,18 @@ async fn abort_run(Path(id): Path<String>) -> StatusCode {
     StatusCode::OK
 }
 
+/// `POST /api/runs/{id}/epics/{epic_id}/retry`: re-run one blocked epic of a
+/// finished run. 404 for an unknown run, 409 while the run is still active,
+/// 400 if the epic is not in a retryable blocked state.
+async fn retry_epic(Path((id, epic_id)): Path<(String, String)>) -> Response {
+    match run::retry(&id, &epic_id).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e @ RetryError::NotFound) => (StatusCode::NOT_FOUND, e.message()).into_response(),
+        Err(e @ RetryError::RunActive) => (StatusCode::CONFLICT, e.message()).into_response(),
+        Err(e @ RetryError::NotBlocked) => (StatusCode::BAD_REQUEST, e.message()).into_response(),
+    }
+}
+
 /// `GET /api/runs/{id}/events`: upgrade to a WebSocket, send the current
 /// `App` snapshot as JSON text, then forward every broadcast snapshot as JSON
 /// text until the channel closes.
@@ -208,6 +220,7 @@ pub fn router() -> Router {
         .route("/api/workspaces/scan", post(scan_workspaces))
         .route("/api/runs", get(list_runs).post(start_run))
         .route("/api/runs/{id}/abort", post(abort_run))
+        .route("/api/runs/{id}/epics/{epic_id}/retry", post(retry_epic))
         .route("/api/runs/{id}/events", get(run_events))
         .route("/api/refine/questions", post(refine_questions))
         .route("/api/refine/finalize", post(refine_finalize))
@@ -215,9 +228,12 @@ pub fn router() -> Router {
 }
 
 /// Bind loopback on an ephemeral port, print the URL, optionally open the
-/// default browser, and serve until the process is stopped.
+/// default browser, and serve until the process is stopped. Set `AGENTIC_ADDR`
+/// to pin the bind address (host:port) instead of the default ephemeral port;
+/// the browser smoke test uses this to reach a known URL.
 pub async fn serve(open_browser: bool) -> anyhow::Result<()> {
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let bind_addr = std::env::var("AGENTIC_ADDR").unwrap_or_else(|_| "127.0.0.1:0".to_string());
+    let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr = listener.local_addr()?;
     let url = format!("http://{addr}");
     println!("agentic-tui web UI at {url}");

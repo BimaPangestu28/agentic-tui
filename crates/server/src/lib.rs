@@ -60,7 +60,6 @@ pub async fn run_pipeline(
         model: config::MODEL_PLAN,
         tools: config::PLAN_TOOLS,
         max_turns: config::PLAN_MAX_TURNS,
-        budget_usd: config::EPIC_BUDGET_USD,
         prompt: &prompt,
     };
     let outcome = engine::run_stage(&spec, tx).await?;
@@ -94,7 +93,6 @@ pub async fn run_pipeline(
         repos,
         goal: goal.to_string(),
         default_verify: default_verify.to_string(),
-        budget_usd: config::GLOBAL_BUDGET_USD,
         initial_cost: refine_cost + outcome.cost,
     };
     orchestrator::run(&parsed, run_config, tx.clone()).await?;

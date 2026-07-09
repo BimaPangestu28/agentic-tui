@@ -66,6 +66,10 @@ pub struct EpicView {
     pub cost: f64,
     pub repo: String,
     pub depends_on: Vec<String>,
+    /// Why a blocked epic (Failed/Skipped/Conflict) is stuck, shown on its
+    /// card. `None` for epics that never left a healthy state.
+    #[serde(default)]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -95,6 +99,9 @@ pub enum StageEvent {
     StageTool {
         tag: String,
         name: String,
+        /// Compact JSON of the tool's input arguments, or empty when absent.
+        #[serde(default)]
+        input: String,
     },
     // Lifecycle.
     PlanReady {
@@ -142,12 +149,11 @@ pub struct App {
     pub epics: Vec<EpicView>,
     pub log: VecDeque<String>,
     pub total_cost: f64,
-    pub budget: f64,
     pub error: Option<String>,
 }
 
 impl App {
-    pub fn new(goal: String, workspace: String, budget: f64) -> Self {
+    pub fn new(goal: String, workspace: String) -> Self {
         Self {
             goal,
             workspace,
@@ -155,7 +161,6 @@ impl App {
             epics: Vec::new(),
             log: VecDeque::new(),
             total_cost: 0.0,
-            budget,
             error: None,
         }
     }
@@ -177,6 +182,12 @@ impl App {
         }
     }
 
+    fn set_reason(&mut self, id: &str, reason: Option<String>) {
+        if let Some(epic) = self.epic_mut(id) {
+            epic.reason = reason;
+        }
+    }
+
     /// Apply a wire event to the run state. This is exactly the terminal-
     /// independent logic the old `App::apply` performed for these variants;
     /// the server's `Input`/`Tick` variants are handled by the server itself.
@@ -184,7 +195,13 @@ impl App {
         match ev {
             StageEvent::StageLog { tag, line } => self.push_log(format!("[{tag}] {line}")),
             StageEvent::StageAssistant { tag, text } => self.push_log(format!("[{tag}] . {text}")),
-            StageEvent::StageTool { tag, name } => self.push_log(format!("[{tag}] tool: {name}")),
+            StageEvent::StageTool { tag, name, input } => {
+                if input.is_empty() {
+                    self.push_log(format!("[{tag}] tool: {name}"))
+                } else {
+                    self.push_log(format!("[{tag}] tool: {name} {input}"))
+                }
+            }
             StageEvent::PlanReady { epics } => {
                 self.phase = Phase::Implementing;
                 self.epics = epics
@@ -196,6 +213,7 @@ impl App {
                         cost: 0.0,
                         repo: meta.repo,
                         depends_on: meta.depends_on,
+                        reason: None,
                     })
                     .collect();
                 self.push_log(format!("plan ready: {} epics", self.epics.len()));
@@ -209,9 +227,12 @@ impl App {
                         cost: 0.0,
                         repo,
                         depends_on: Vec::new(),
+                        reason: None,
                     });
                 } else {
                     self.set_status(&id, EpicStatus::Running);
+                    // A retry clears the block reason from the previous attempt.
+                    self.set_reason(&id, None);
                 }
                 self.push_log(format!("epic {id} started: {title}"));
             }
@@ -224,10 +245,12 @@ impl App {
             }
             StageEvent::EpicMerged { id } => {
                 self.set_status(&id, EpicStatus::Merged);
+                self.set_reason(&id, None);
                 self.push_log(format!("epic {id} merged"));
             }
             StageEvent::EpicFailed { id, reason } => {
                 self.set_status(&id, EpicStatus::Failed);
+                self.set_reason(&id, Some(reason.clone()));
                 self.push_log(format!("epic {id} failed: {reason}"));
             }
             StageEvent::EpicSkipped { id } => {
@@ -239,13 +262,19 @@ impl App {
                         cost: 0.0,
                         repo: String::new(),
                         depends_on: Vec::new(),
+                        reason: Some("a dependency failed or was skipped".to_string()),
                     });
                 } else {
                     self.set_status(&id, EpicStatus::Skipped);
+                    self.set_reason(&id, Some("a dependency failed or was skipped".to_string()));
                 }
             }
             StageEvent::EpicConflict { id } => {
                 self.set_status(&id, EpicStatus::Conflict);
+                self.set_reason(
+                    &id,
+                    Some("merge conflict; the worktree is kept for a manual merge".to_string()),
+                );
                 self.push_log(format!("epic {id} merge conflict, needs manual merge"));
             }
             StageEvent::Cost { total } => self.total_cost = total,
@@ -361,7 +390,6 @@ pub struct RunSummary {
     pub goal: String,
     pub phase: Phase,
     pub total_cost: f64,
-    pub budget: f64,
     pub epics: Vec<EpicView>,
     pub repos: Vec<String>,
 }
@@ -413,7 +441,7 @@ mod tests {
 
     #[test]
     fn plan_ready_seeds_a_pending_card_per_epic() {
-        let mut app = App::new("goal".to_string(), "ws".to_string(), 10.0);
+        let mut app = App::new("goal".to_string(), "ws".to_string());
         app.apply_stage(StageEvent::PlanReady {
             epics: vec![
                 EpicMeta {
@@ -438,7 +466,7 @@ mod tests {
 
     #[test]
     fn plan_ready_seeds_repo_on_each_card() {
-        let mut app = App::new("goal".to_string(), "ws".to_string(), 10.0);
+        let mut app = App::new("goal".to_string(), "ws".to_string());
         app.apply_stage(StageEvent::PlanReady {
             epics: vec![EpicMeta {
                 id: "a".to_string(),
@@ -452,7 +480,7 @@ mod tests {
 
     #[test]
     fn epic_started_carries_repo_onto_a_new_card() {
-        let mut app = App::new("g".to_string(), "ws".to_string(), 10.0);
+        let mut app = App::new("g".to_string(), "ws".to_string());
         app.apply_stage(StageEvent::EpicStarted {
             id: "z".to_string(),
             title: "Z".to_string(),
@@ -460,6 +488,48 @@ mod tests {
         });
         let card = app.epics.iter().find(|e| e.id == "z").unwrap();
         assert_eq!(card.repo, "billing");
+    }
+
+    #[test]
+    fn a_failed_epic_records_its_reason_on_the_card() {
+        let mut app = App::new("g".to_string(), "ws".to_string());
+        app.apply_stage(StageEvent::EpicStarted {
+            id: "z".to_string(),
+            title: "Z".to_string(),
+            repo: "billing".to_string(),
+        });
+        app.apply_stage(StageEvent::EpicFailed {
+            id: "z".to_string(),
+            reason: "verify failed after retry".to_string(),
+        });
+        let card = app.epics.iter().find(|e| e.id == "z").unwrap();
+        assert_eq!(card.status, EpicStatus::Failed);
+        assert_eq!(card.reason.as_deref(), Some("verify failed after retry"));
+    }
+
+    #[test]
+    fn retrying_a_blocked_epic_clears_its_reason() {
+        let mut app = App::new("g".to_string(), "ws".to_string());
+        app.apply_stage(StageEvent::EpicStarted {
+            id: "z".to_string(),
+            title: "Z".to_string(),
+            repo: "billing".to_string(),
+        });
+        app.apply_stage(StageEvent::EpicConflict {
+            id: "z".to_string(),
+        });
+        assert!(app.epics[0].reason.is_some());
+
+        // A retry re-emits EpicStarted for the same epic, which returns it to
+        // Running and drops the stale block reason.
+        app.apply_stage(StageEvent::EpicStarted {
+            id: "z".to_string(),
+            title: "Z".to_string(),
+            repo: "billing".to_string(),
+        });
+        let card = app.epics.iter().find(|e| e.id == "z").unwrap();
+        assert_eq!(card.status, EpicStatus::Running);
+        assert_eq!(card.reason, None);
     }
 
     #[test]
@@ -620,7 +690,6 @@ mod tests {
             goal: "Add a health check".to_string(),
             phase: Phase::Implementing,
             total_cost: 0.42,
-            budget: 10.0,
             epics: Vec::new(),
             repos: vec!["greentic".to_string()],
         };

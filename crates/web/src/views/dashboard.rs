@@ -196,11 +196,6 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
                 .map(|run| {
                     let class = phase_class(run.phase);
                     let href = format!("/run/{}", run.id);
-                    let budget_pct = if run.budget > 0.0 {
-                        (run.total_cost / run.budget * 100.0).clamp(0.0, 100.0)
-                    } else {
-                        0.0
-                    };
                     view! {
                         <A attr:class=format!("run-card {class}") href=href>
                             <span class="phase-dot"></span>
@@ -218,17 +213,9 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
                                 <span class=format!("run-phase {class}")>
                                     {phase_label(run.phase)}
                                 </span>
-                                <div class="rc-budget">
-                                    <div class="budget-bar">
-                                        <div
-                                            class="budget-bar-fill"
-                                            style=format!("width: {budget_pct}%")
-                                        ></div>
-                                    </div>
-                                    <span class="mini-budget">
-                                        {format!("${:.2} / ${:.2}", run.total_cost, run.budget)}
-                                    </span>
-                                </div>
+                                <span class="mini-budget">
+                                    {format!("${:.2}", run.total_cost)}
+                                </span>
                             </div>
                         </A>
                     }
