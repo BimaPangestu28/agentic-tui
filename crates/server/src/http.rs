@@ -78,7 +78,7 @@ async fn save_workspaces_handler(Json(request): Json<SaveRequest>) -> Response {
 async fn start_run(Json(request): Json<StartRunRequest>) -> Response {
     match run::start(request).await {
         Ok(run_id) => Json(StartRunResponse { run_id }).into_response(),
-        Err(StartError::Busy) => (StatusCode::CONFLICT, StartError::Busy.message()).into_response(),
+        Err(e @ StartError::Busy) => (StatusCode::CONFLICT, e.message()).into_response(),
         Err(e @ StartError::Invalid(_)) => (StatusCode::BAD_REQUEST, e.message()).into_response(),
     }
 }

@@ -191,15 +191,21 @@ fn spawn_pipeline(
 /// up epic worktrees, mirroring the TUI's abort path. A no-op for an unknown
 /// or already-finished id.
 pub async fn abort(id: &str) {
-    let mut active = ACTIVE.lock().await;
-    let matches_active = matches!(
-        active.as_ref(),
-        Some(handle) if handle.id == id && !handle.completed.load(Ordering::SeqCst)
-    );
-    if !matches_active {
-        return;
-    }
-    if let Some(handle) = active.take() {
+    // Take the handle out and release the global lock before the awaits below,
+    // so a slow task teardown or worktree cleanup never blocks other start,
+    // abort, or subscribe requests.
+    let handle = {
+        let mut active = ACTIVE.lock().await;
+        let matches_active = matches!(
+            active.as_ref(),
+            Some(handle) if handle.id == id && !handle.completed.load(Ordering::SeqCst)
+        );
+        if !matches_active {
+            return;
+        }
+        active.take()
+    };
+    if let Some(handle) = handle {
         handle.task.abort();
         let _ = handle.task.await;
         if let Err(e) = worktree::cleanup_all(&handle.repo).await {
