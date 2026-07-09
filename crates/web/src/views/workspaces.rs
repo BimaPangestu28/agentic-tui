@@ -12,8 +12,8 @@ use shared::{RepoDto, WorkspaceDto};
 
 use crate::api;
 
-/// The last path component of `root`, used to name a scanned group until the
-/// onboarding grouping UI (Task 6) lets the user name it.
+/// The last path component of `root`, used to prefill the group-name input
+/// once a scan of that root comes back.
 fn root_basename(root: &str) -> String {
     root.trim_end_matches('/')
         .rsplit('/')
@@ -30,6 +30,7 @@ pub fn Workspaces() -> impl IntoView {
     let root_input = RwSignal::new(String::new());
     let scan_results = RwSignal::new(Vec::<RepoDto>::new());
     let checked_paths = RwSignal::new(HashSet::<String>::new());
+    let group_name = RwSignal::new(String::new());
     let scanning = RwSignal::new(false);
     let scan_error = RwSignal::new(None::<String>);
     let saving = RwSignal::new(false);
@@ -68,6 +69,9 @@ pub fn Workspaces() -> impl IntoView {
                     // Pre-check every discovered repo; the user unchecks the
                     // ones they do not want to save.
                     checked_paths.set(response.repos.iter().map(|r| r.path.clone()).collect());
+                    // Prefill the group name from the scanned root so the
+                    // common case (accept the default) needs no typing.
+                    group_name.set(root_basename(&root));
                     scan_results.set(response.repos);
                     scan_error.set(None);
                 }
@@ -78,20 +82,34 @@ pub fn Workspaces() -> impl IntoView {
     };
 
     let on_save = move |_| {
+        let name = group_name.get().trim().to_string();
         let checked = checked_paths.get();
         let selected: Vec<RepoDto> = scan_results
             .get()
             .into_iter()
             .filter(|repo| checked.contains(&repo.path))
             .collect();
-        if selected.is_empty() {
-            save_error.set(Some("Check at least one repo before saving.".to_string()));
-            return;
+        match (name.is_empty(), selected.is_empty()) {
+            (true, true) => {
+                save_error.set(Some(
+                    "Enter a workspace name and check at least one repo before saving.".to_string(),
+                ));
+                return;
+            }
+            (true, false) => {
+                save_error.set(Some("Enter a workspace name before saving.".to_string()));
+                return;
+            }
+            (false, true) => {
+                save_error.set(Some("Check at least one repo before saving.".to_string()));
+                return;
+            }
+            (false, false) => {}
         }
-        // For now the checked repos become one group named after the scanned
-        // folder. Task 6 adds the real grouping-and-naming UI.
+        // All the checked repos become one group under the name the user
+        // gave it.
         let group = WorkspaceDto {
-            name: root_basename(&root_input.get()),
+            name,
             repos: selected,
         };
         saving.set(true);
@@ -102,6 +120,7 @@ pub fn Workspaces() -> impl IntoView {
                     scan_results.set(Vec::new());
                     checked_paths.set(HashSet::new());
                     root_input.set(String::new());
+                    group_name.set(String::new());
                     save_error.set(None);
                     reload_workspaces();
                 }
@@ -139,10 +158,12 @@ pub fn Workspaces() -> impl IntoView {
                     children=move |workspace: WorkspaceDto| {
                         let href = format!("/run/new?workspace={}", workspace.name);
                         let repo_count = workspace.repos.len();
-                        let summary = match workspace.repos.first() {
-                            Some(first) if repo_count == 1 => first.path.clone(),
-                            Some(_) => format!("{repo_count} repos"),
-                            None => "no repos".to_string(),
+                        let summary = match repo_count {
+                            0 => "no repos".to_string(),
+                            // A single-repo group still shows its path; the
+                            // repo count is what every group needs, though.
+                            1 => format!("{} · 1 repo", workspace.repos[0].path),
+                            n => format!("{n} repos"),
                         };
                         view! {
                             <li class="workspace-row">
@@ -197,6 +218,19 @@ pub fn Workspaces() -> impl IntoView {
                                             }}
                                         </span>
                                     </div>
+                                    <div class="field">
+                                        <label>"Workspace name"</label>
+                                        <input
+                                            type="text"
+                                            class="mono"
+                                            placeholder="e.g. platform-repos"
+                                            prop:value=move || group_name.get()
+                                            on:input=move |ev| {
+                                                group_name.set(event_target_value(&ev));
+                                            }
+                                        />
+                                    </div>
+
                                     <For
                                         each=move || scan_results.get()
                                         key=|repo| repo.path.clone()
