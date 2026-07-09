@@ -18,7 +18,7 @@ pub enum Phase {
     Failed,
 }
 
-#[derive(Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub enum EpicStatus {
     // Seeded when the plan is ready; shown in the kanban Todo column.
     Pending,
@@ -58,7 +58,7 @@ pub fn is_on_hold(depends_on: &[String], status_by_id: &HashMap<String, EpicStat
         .any(|dep| status_by_id.get(dep) != Some(&EpicStatus::Merged))
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EpicView {
     pub id: String,
     pub title: String,
@@ -307,6 +307,19 @@ pub struct RefineFinalizeResponse {
     pub cost: f64,
 }
 
+/// A snapshot of one run for the multi-run dashboard.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunSummary {
+    pub id: String,
+    pub workspace: String,
+    pub path: String,
+    pub goal: String,
+    pub phase: Phase,
+    pub total_cost: f64,
+    pub budget: f64,
+    pub epics: Vec<EpicView>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -511,5 +524,23 @@ mod tests {
         let back: ScanResponse =
             serde_json::from_str(&json).expect("ScanResponse must deserialize");
         assert_eq!(response.repos, back.repos);
+    }
+
+    #[test]
+    fn run_summary_round_trips_through_json() {
+        let summary = RunSummary {
+            id: "1".to_string(),
+            workspace: "greentic".to_string(),
+            path: "/tmp/greentic".to_string(),
+            goal: "Add a health check".to_string(),
+            phase: Phase::Implementing,
+            total_cost: 0.42,
+            budget: 10.0,
+            epics: Vec::new(),
+        };
+        let json = serde_json::to_string(&summary).expect("serialize");
+        let back: RunSummary = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.workspace, "greentic");
+        assert_eq!(back.phase, summary.phase);
     }
 }
