@@ -7,8 +7,9 @@
 CARGO ?= cargo
 BIN   := agentic-tui
 
-# Default goal and workspace for `make run`.
-GOAL ?= Add a health check endpoint
+# Optional goal and workspace for `make run`. Leave GOAL empty to enter the
+# goal in the TUI, the same as running the binary without a goal argument.
+GOAL ?=
 WORKSPACE ?=
 
 .DEFAULT_GOAL := help
@@ -27,8 +28,8 @@ release: ## Build an optimized release binary
 	$(CARGO) build --release
 
 .PHONY: run
-run: ## Run the orchestrator (GOAL="..." WORKSPACE=name|path)
-	$(CARGO) run -- "$(GOAL)" $(if $(WORKSPACE),--workspace "$(WORKSPACE)",)
+run: ## Run the orchestrator (GOAL="..." WORKSPACE=name|path; omit GOAL to enter it in the TUI)
+	$(CARGO) run -- $(if $(GOAL),"$(GOAL)",) $(if $(WORKSPACE),--workspace "$(WORKSPACE)",)
 
 .PHONY: check
 check: ## Type-check without producing a binary
