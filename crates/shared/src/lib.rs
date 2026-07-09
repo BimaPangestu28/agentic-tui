@@ -290,6 +290,41 @@ pub struct StartRunResponse {
     pub run_id: String,
 }
 
+/// Body of `POST /api/refine/questions`: the repo to refine against and the
+/// user's original goal.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineQuestionsRequest {
+    pub repo: String,
+    pub goal: String,
+}
+
+/// Response of `POST /api/refine/questions`: the rewritten goal, at most
+/// `REFINE_MAX_QUESTIONS` clarifying questions, and the cost incurred by the
+/// pass (billed even when the result could not be parsed).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineQuestionsResponse {
+    pub refined_goal: String,
+    pub questions: Vec<String>,
+    pub cost: f64,
+}
+
+/// Body of `POST /api/refine/finalize`: the original goal and the
+/// question/answer pairs collected from the user.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineFinalizeRequest {
+    pub repo: String,
+    pub goal: String,
+    pub answers: Vec<(String, String)>,
+}
+
+/// Response of `POST /api/refine/finalize`: the final goal and the cost
+/// incurred by the pass.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RefineFinalizeResponse {
+    pub refined_goal: String,
+    pub cost: f64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -428,6 +463,56 @@ mod tests {
         let back: StartRunResponse =
             serde_json::from_str(&json).expect("StartRunResponse must deserialize");
         assert_eq!(back.run_id, "1");
+    }
+
+    #[test]
+    fn refine_questions_request_and_response_round_trip_through_json() {
+        let request = RefineQuestionsRequest {
+            repo: "/tmp/greentic".to_string(),
+            goal: "add a health check".to_string(),
+        };
+        let json = serde_json::to_string(&request).expect("RefineQuestionsRequest must serialize");
+        let back: RefineQuestionsRequest =
+            serde_json::from_str(&json).expect("RefineQuestionsRequest must deserialize");
+        assert_eq!(back.repo, "/tmp/greentic");
+        assert_eq!(back.goal, "add a health check");
+
+        let response = RefineQuestionsResponse {
+            refined_goal: "add a health check endpoint at /healthz".to_string(),
+            questions: vec!["Which port?".to_string()],
+            cost: 0.03,
+        };
+        let json =
+            serde_json::to_string(&response).expect("RefineQuestionsResponse must serialize");
+        let back: RefineQuestionsResponse =
+            serde_json::from_str(&json).expect("RefineQuestionsResponse must deserialize");
+        assert_eq!(back.refined_goal, response.refined_goal);
+        assert_eq!(back.questions, response.questions);
+        assert_eq!(back.cost, response.cost);
+    }
+
+    #[test]
+    fn refine_finalize_request_and_response_round_trip_through_json() {
+        let request = RefineFinalizeRequest {
+            repo: "/tmp/greentic".to_string(),
+            goal: "add a health check".to_string(),
+            answers: vec![("Which port?".to_string(), "8080".to_string())],
+        };
+        let json = serde_json::to_string(&request).expect("RefineFinalizeRequest must serialize");
+        let back: RefineFinalizeRequest =
+            serde_json::from_str(&json).expect("RefineFinalizeRequest must deserialize");
+        assert_eq!(back.repo, "/tmp/greentic");
+        assert_eq!(back.answers, request.answers);
+
+        let response = RefineFinalizeResponse {
+            refined_goal: "add a health check endpoint on port 8080".to_string(),
+            cost: 0.02,
+        };
+        let json = serde_json::to_string(&response).expect("RefineFinalizeResponse must serialize");
+        let back: RefineFinalizeResponse =
+            serde_json::from_str(&json).expect("RefineFinalizeResponse must deserialize");
+        assert_eq!(back.refined_goal, response.refined_goal);
+        assert_eq!(back.cost, response.cost);
     }
 
     #[test]

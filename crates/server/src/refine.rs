@@ -91,6 +91,50 @@ async fn run_refine_pass(
     (outcome.cost, result)
 }
 
+/// Run refine pass 1 for the HTTP API: rewrite the goal and gather
+/// clarifying questions, truncated to `REFINE_MAX_QUESTIONS`. On failure
+/// (the pass errored, or `.agentic-refine.json` was unreadable or
+/// unparseable), falls back to the original goal with no questions. The cost
+/// is real either way, since it is billed once the session runs.
+pub async fn questions(repo: &Path, goal: &str) -> (String, Vec<String>, f64) {
+    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+    let out_path = repo.join(".agentic-refine.json");
+    let (cost, result) = run_refine_pass(
+        repo,
+        &config::refine_questions_prompt(goal, &out_path.to_string_lossy()),
+        &out_path,
+        &tx,
+    )
+    .await;
+    match result {
+        Ok(result) => {
+            let mut questions = result.questions;
+            questions.truncate(config::REFINE_MAX_QUESTIONS);
+            (result.refined_goal, questions, cost)
+        }
+        Err(_) => (goal.to_string(), Vec::new(), cost),
+    }
+}
+
+/// Run refine pass 2 for the HTTP API: fold the user's answers into a final
+/// goal. On failure, falls back to the original goal; the cost is still
+/// reported.
+pub async fn finalize(repo: &Path, goal: &str, answers: &[(String, String)]) -> (String, f64) {
+    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+    let out_path = repo.join(".agentic-refine.json");
+    let (cost, result) = run_refine_pass(
+        repo,
+        &config::refine_finalize_prompt(goal, answers, &out_path.to_string_lossy()),
+        &out_path,
+        &tx,
+    )
+    .await;
+    match result {
+        Ok(result) => (result.refined_goal, cost),
+        Err(_) => (goal.to_string(), cost),
+    }
+}
+
 /// Run the goal-refine flow on its own alternate screen. Returns the confirmed
 /// goal (or the original goal if refining is skipped or fails) and the total
 /// refine cost. A `None` goal means the user cancelled the run.

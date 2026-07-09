@@ -13,10 +13,12 @@ use axum::{
 };
 use rust_embed::RustEmbed;
 use shared::{
+    RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
     SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse, WorkspaceDto,
 };
 use tokio::sync::broadcast;
 
+use crate::refine;
 use crate::run::{self, StartError};
 use crate::workspace::{self, Workspace};
 
@@ -128,6 +130,33 @@ async fn stream_run(mut socket: WebSocket, id: String) {
     }
 }
 
+/// `POST /api/refine/questions`: run the first refine pass, rewriting the
+/// goal and gathering clarifying questions. Falls back to the original goal
+/// with no questions if the pass fails; the incurred cost is reported
+/// either way.
+async fn refine_questions(
+    Json(request): Json<RefineQuestionsRequest>,
+) -> Json<RefineQuestionsResponse> {
+    let repo = workspace::expand_tilde(&request.repo);
+    let (refined_goal, questions, cost) = refine::questions(&repo, &request.goal).await;
+    Json(RefineQuestionsResponse {
+        refined_goal,
+        questions,
+        cost,
+    })
+}
+
+/// `POST /api/refine/finalize`: run the second refine pass, folding the
+/// user's answers into a final goal. Falls back to the original goal if the
+/// pass fails; the incurred cost is reported either way.
+async fn refine_finalize(
+    Json(request): Json<RefineFinalizeRequest>,
+) -> Json<RefineFinalizeResponse> {
+    let repo = workspace::expand_tilde(&request.repo);
+    let (refined_goal, cost) = refine::finalize(&repo, &request.goal, &request.answers).await;
+    Json(RefineFinalizeResponse { refined_goal, cost })
+}
+
 /// Serve an embedded asset for any path, falling back to `index.html` so
 /// client-side routes (once the app has any) resolve to the same shell.
 async fn static_handler(uri: Uri) -> Response {
@@ -154,6 +183,8 @@ pub fn router() -> Router {
         .route("/api/runs", post(start_run))
         .route("/api/runs/{id}/abort", post(abort_run))
         .route("/api/runs/{id}/events", get(run_events))
+        .route("/api/refine/questions", post(refine_questions))
+        .route("/api/refine/finalize", post(refine_finalize))
         .fallback(static_handler)
 }
 
@@ -259,5 +290,139 @@ mod tests {
         assert_eq!(beta.integration.as_deref(), Some("agentic-wip"));
 
         let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Serializes the refine-endpoint tests below, which all mutate the
+    /// process-wide `PATH` env var to point a fake `claude` at a script that
+    /// writes `.agentic-refine.json` (`cargo test` runs every test in this
+    /// binary in one process, so unguarded mutation would race).
+    static PATH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Write a fake `claude` into `bin_dir` running `script_body`, matching
+    /// what `engine::run_stage` expects: a `claude -p ... --output-format
+    /// stream-json` process whose stdout is NDJSON.
+    fn install_fake_claude(bin_dir: &std::path::Path, script_body: &str) {
+        std::fs::create_dir_all(bin_dir).unwrap();
+        let script = bin_dir.join("claude");
+        std::fs::write(&script, script_body).unwrap();
+        let mut perms = std::fs::metadata(&script).unwrap().permissions();
+        std::os::unix::fs::PermissionsExt::set_mode(&mut perms, 0o755);
+        std::fs::set_permissions(&script, perms).unwrap();
+    }
+
+    /// Point `PATH` at `bin_dir` (prepended to the current `PATH`) for the
+    /// duration of the caller's fake-`claude` test, returning the original
+    /// value to restore afterward.
+    fn prepend_path(bin_dir: &std::path::Path) -> String {
+        let original_path = std::env::var("PATH").unwrap_or_default();
+        std::env::set_var("PATH", format!("{}:{original_path}", bin_dir.display()));
+        original_path
+    }
+
+    #[tokio::test]
+    async fn refine_questions_handler_returns_the_parsed_goal_and_truncates_questions() {
+        let _path_guard = PATH_ENV_LOCK.lock().await;
+
+        let base = std::env::temp_dir().join(format!("http-refine-q-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        let bin_dir = base.join("bin");
+        std::fs::create_dir_all(&repo).unwrap();
+        install_fake_claude(
+            &bin_dir,
+            "#!/bin/sh\n\
+             echo '{\"refined_goal\":\"add a health check endpoint at /healthz\",\
+             \"questions\":[\"Which port?\",\"Auth required?\",\"Which framework?\",\
+             \"Should it check DB connectivity?\",\"JSON or plain text?\",\
+             \"Which HTTP method?\",\"Add a version endpoint too?\"]}' > .agentic-refine.json\n\
+             echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.03}'\n",
+        );
+        let original_path = prepend_path(&bin_dir);
+
+        let response = refine_questions(Json(RefineQuestionsRequest {
+            repo: repo.to_string_lossy().to_string(),
+            goal: "add a health check".to_string(),
+        }))
+        .await;
+
+        std::env::set_var("PATH", original_path);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(
+            response.0.refined_goal,
+            "add a health check endpoint at /healthz"
+        );
+        assert_eq!(
+            response.0.questions.len(),
+            crate::config::REFINE_MAX_QUESTIONS
+        );
+        assert_eq!(response.0.questions[4], "JSON or plain text?");
+        assert_eq!(response.0.cost, 0.03);
+    }
+
+    #[tokio::test]
+    async fn refine_finalize_handler_returns_the_final_goal() {
+        let _path_guard = PATH_ENV_LOCK.lock().await;
+
+        let base = std::env::temp_dir().join(format!("http-refine-f-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        let bin_dir = base.join("bin");
+        std::fs::create_dir_all(&repo).unwrap();
+        install_fake_claude(
+            &bin_dir,
+            "#!/bin/sh\n\
+             echo '{\"refined_goal\":\"add a health check endpoint at /healthz on port 8080\",\
+             \"questions\":[]}' > .agentic-refine.json\n\
+             echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.02}'\n",
+        );
+        let original_path = prepend_path(&bin_dir);
+
+        let response = refine_finalize(Json(RefineFinalizeRequest {
+            repo: repo.to_string_lossy().to_string(),
+            goal: "add a health check".to_string(),
+            answers: vec![("Which port?".to_string(), "8080".to_string())],
+        }))
+        .await;
+
+        std::env::set_var("PATH", original_path);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(
+            response.0.refined_goal,
+            "add a health check endpoint at /healthz on port 8080"
+        );
+        assert_eq!(response.0.cost, 0.02);
+    }
+
+    #[tokio::test]
+    async fn a_billed_but_unparseable_refine_pass_still_reports_cost_and_falls_back() {
+        let _path_guard = PATH_ENV_LOCK.lock().await;
+
+        let base = std::env::temp_dir().join(format!("http-refine-bad-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let repo = base.join("repo");
+        let bin_dir = base.join("bin");
+        std::fs::create_dir_all(&repo).unwrap();
+        install_fake_claude(
+            &bin_dir,
+            "#!/bin/sh\n\
+             echo 'not json at all' > .agentic-refine.json\n\
+             echo '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"total_cost_usd\":0.05}'\n",
+        );
+        let original_path = prepend_path(&bin_dir);
+
+        let response = refine_questions(Json(RefineQuestionsRequest {
+            repo: repo.to_string_lossy().to_string(),
+            goal: "add a health check".to_string(),
+        }))
+        .await;
+
+        std::env::set_var("PATH", original_path);
+        let _ = std::fs::remove_dir_all(&base);
+
+        assert_eq!(response.0.refined_goal, "add a health check");
+        assert!(response.0.questions.is_empty());
+        assert_eq!(response.0.cost, 0.05);
     }
 }
