@@ -3,10 +3,11 @@
 //! epic, merging passing epics into an integration branch.
 //!
 //! Usage:
-//!   cargo run -- ["<goal>"] [--workspace <name|path>] [--verify "<cmd>"]
+//!   cargo run -- ["<goal>"] [--workspace <name|path>] [--verify "<cmd>"] [--no-refine]
 //!
 //! The goal is optional; if omitted it is typed in the TUI after the workspace
-//! is chosen.
+//! is chosen. Unless `--no-refine` is passed, the goal runs through a
+//! clarifying refine pass before planning starts.
 //!
 //! Prerequisites: the Claude Code CLI on PATH, a subscription login, and git.
 
@@ -40,6 +41,7 @@ struct Args {
     goal: String,
     workspace: Option<String>,
     verify: Option<String>,
+    no_refine: bool,
 }
 
 fn parse_args() -> Option<Args> {
@@ -47,6 +49,7 @@ fn parse_args() -> Option<Args> {
     let mut goal_parts: Vec<String> = Vec::new();
     let mut workspace = None;
     let mut verify = None;
+    let mut no_refine = false;
     let mut i = 0;
     while i < raw.len() {
         match raw[i].as_str() {
@@ -58,6 +61,7 @@ fn parse_args() -> Option<Args> {
                 i += 1;
                 verify = raw.get(i).cloned();
             }
+            "--no-refine" => no_refine = true,
             other => goal_parts.push(other.to_string()),
         }
         i += 1;
@@ -67,6 +71,7 @@ fn parse_args() -> Option<Args> {
         goal,
         workspace,
         verify,
+        no_refine,
     })
 }
 
@@ -270,7 +275,7 @@ async fn main() -> anyhow::Result<()> {
         Some(a) => a,
         None => {
             eprintln!(
-                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"]"
+                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"] [--no-refine]"
             );
             std::process::exit(1);
         }
@@ -295,7 +300,7 @@ async fn main() -> anyhow::Result<()> {
         .clone()
         .unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
 
-    let goal = if args.goal.is_empty() {
+    let mut goal = if args.goal.is_empty() {
         match run_goal_input(&selected.name)? {
             Some(entered) => entered,
             None => {
@@ -305,6 +310,24 @@ async fn main() -> anyhow::Result<()> {
         }
     } else {
         args.goal.clone()
+    };
+
+    let refine_cost = if args.no_refine {
+        0.0
+    } else {
+        match refine::run(&repo, &goal).await? {
+            refine::RefineOutcome {
+                goal: Some(refined),
+                cost,
+            } => {
+                goal = refined;
+                cost
+            }
+            refine::RefineOutcome { goal: None, .. } => {
+                println!("run cancelled");
+                return Ok(());
+            }
+        }
     };
 
     let mut app = App::new(
@@ -344,7 +367,9 @@ async fn main() -> anyhow::Result<()> {
     let goal_run = goal.clone();
     let verify_run = verify_cmd.clone();
     let pipeline_handle = tokio::spawn(async move {
-        if let Err(e) = run_pipeline(&repo_run, &goal_run, &verify_run, &pipeline_tx).await {
+        if let Err(e) =
+            run_pipeline(&repo_run, &goal_run, &verify_run, refine_cost, &pipeline_tx).await
+        {
             let _ = pipeline_tx.send(AppEvent::Fatal(e.to_string()));
         }
     });
@@ -409,8 +434,13 @@ async fn run_pipeline(
     repo: &std::path::Path,
     goal: &str,
     verify_cmd: &str,
+    refine_cost: f64,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> anyhow::Result<()> {
+    // Count refine spending toward the run total before planning starts.
+    if refine_cost > 0.0 {
+        let _ = tx.send(AppEvent::Cost(refine_cost));
+    }
     let plan_path = repo.join(".agentic-plan.json");
     let plan_path_str = plan_path.to_string_lossy().to_string();
     let prompt = config::plan_prompt(goal, &plan_path_str);
@@ -447,7 +477,7 @@ async fn run_pipeline(
         verify_cmd: verify_cmd.to_string(),
         integration_branch: "agentic-integration".to_string(),
         budget_usd: config::GLOBAL_BUDGET_USD,
-        initial_cost: outcome.cost,
+        initial_cost: refine_cost + outcome.cost,
     };
     orchestrator::run(&parsed, run_config, tx.clone()).await?;
     Ok(())

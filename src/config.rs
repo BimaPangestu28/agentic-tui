@@ -25,15 +25,10 @@ pub const EPIC_MAX_TURNS: u32 = 40;
 
 // Refine stage. Sharpening the goal does not need opus, so it defaults to
 // sonnet. Read-only plus Write (for the result file), no Edit or Bash.
-#[allow(dead_code)]
 pub const MODEL_REFINE: &str = "sonnet";
-#[allow(dead_code)]
 pub const REFINE_TOOLS: &str = "Read,Glob,Grep,Write,WebSearch,WebFetch,Skill";
-#[allow(dead_code)]
 pub const REFINE_MAX_TURNS: u32 = 12;
-#[allow(dead_code)]
 pub const REFINE_BUDGET_USD: f64 = 0.20;
-#[allow(dead_code)]
 pub const REFINE_MAX_QUESTIONS: usize = 5;
 
 // How many epics may run in parallel.
@@ -70,7 +65,6 @@ Step 4. After writing, print the number of epics and a one line summary.",
 
 /// Prompt for the first refine pass. Claude reads the repo, rewrites the goal to
 /// be specific, and lists clarifying questions, writing them to a JSON file.
-#[allow(dead_code)]
 pub fn refine_questions_prompt(goal: &str, out_path: &str) -> String {
     format!(
         "You are a Tech Lead sharpening a goal before planning work on a \
@@ -94,7 +88,6 @@ Do not write any other file.",
 
 /// Prompt for the second refine pass. Given the original goal and the user's
 /// answers, produce one final goal, writing it to the same JSON file.
-#[allow(dead_code)]
 pub fn refine_finalize_prompt(goal: &str, answers: &[(String, String)], out_path: &str) -> String {
     let qa: String = answers
         .iter()
