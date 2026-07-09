@@ -7,7 +7,8 @@
 use gloo_net::http::Request;
 use shared::{
     RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
-    SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse, WorkspaceDto,
+    RunSummary, SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse,
+    WorkspaceDto,
 };
 
 /// Reads the response body as `T` when the status is a success code, or
@@ -109,6 +110,16 @@ pub async fn abort_run(id: &str) -> Result<(), String> {
         return Err(format!("abort failed with status {status}: {body}"));
     }
     Ok(())
+}
+
+/// `GET /api/runs` -> every run started this session (active and finished),
+/// used by the app-bar runs-switcher and the dashboard.
+pub async fn list_runs() -> Result<Vec<RunSummary>, String> {
+    let response = Request::get("/api/runs")
+        .send()
+        .await
+        .map_err(|err| format!("failed to fetch runs: {err}"))?;
+    into_result(response).await
 }
 
 /// `POST /api/refine/finalize` -> the final refined goal folding in the
