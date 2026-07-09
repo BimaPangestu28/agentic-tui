@@ -158,6 +158,7 @@ pub struct RunConfig {
     pub goal: String,
     pub verify_cmd: String,
     pub integration_branch: String,
+    pub base_ref: String,
     pub budget_usd: f64,
     pub initial_cost: f64,
 }
@@ -188,7 +189,7 @@ async fn run_epic(
         // from the integration branch, which already holds its merged deps
         // (an epic only becomes ready after all its deps have merged).
         let base_ref = if epic.depends_on.is_empty() {
-            "HEAD".to_string()
+            config.base_ref.clone()
         } else {
             config.integration_branch.clone()
         };
@@ -303,6 +304,7 @@ pub async fn run(
                                 &config.repo,
                                 &wt.branch,
                                 &config.integration_branch,
+                                &config.base_ref,
                             )
                             .await
                         };

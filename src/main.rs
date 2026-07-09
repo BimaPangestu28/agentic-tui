@@ -3,7 +3,7 @@
 //! epic, merging passing epics into an integration branch.
 //!
 //! Usage:
-//!   cargo run -- ["<goal>"] [--workspace <name|path>] [--verify "<cmd>"] [--no-refine]
+//!   cargo run -- ["<goal>"] [--workspace <name|path>] [--verify "<cmd>"] [--base <ref>] [--into <branch>] [--no-refine]
 //!
 //! The goal is optional; if omitted it is typed in the TUI after the workspace
 //! is chosen. Unless `--no-refine` is passed, the goal runs through a
@@ -42,6 +42,8 @@ struct Args {
     workspace: Option<String>,
     verify: Option<String>,
     no_refine: bool,
+    base: Option<String>,
+    into: Option<String>,
 }
 
 fn parse_args() -> Option<Args> {
@@ -50,6 +52,8 @@ fn parse_args() -> Option<Args> {
     let mut workspace = None;
     let mut verify = None;
     let mut no_refine = false;
+    let mut base = None;
+    let mut into = None;
     let mut i = 0;
     while i < raw.len() {
         match raw[i].as_str() {
@@ -60,6 +64,14 @@ fn parse_args() -> Option<Args> {
             "--verify" => {
                 i += 1;
                 verify = raw.get(i).cloned();
+            }
+            "--base" => {
+                i += 1;
+                base = raw.get(i).cloned();
+            }
+            "--into" => {
+                i += 1;
+                into = raw.get(i).cloned();
             }
             "--no-refine" => no_refine = true,
             other => goal_parts.push(other.to_string()),
@@ -72,7 +84,15 @@ fn parse_args() -> Option<Args> {
         workspace,
         verify,
         no_refine,
+        base,
+        into,
     })
+}
+
+/// Resolve a setting by precedence: the CLI flag, then the workspace config,
+/// then the built-in default.
+fn resolve_setting(flag: Option<&str>, configured: Option<&str>, default: &str) -> String {
+    flag.or(configured).unwrap_or(default).to_string()
 }
 
 /// What the workspace picker returned: a chosen workspace, a request to add more
@@ -280,7 +300,7 @@ async fn main() -> anyhow::Result<()> {
         Some(a) => a,
         None => {
             eprintln!(
-                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"] [--no-refine]"
+                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"] [--base <ref>] [--into <branch>] [--no-refine]"
             );
             std::process::exit(1);
         }
@@ -304,6 +324,14 @@ async fn main() -> anyhow::Result<()> {
         .verify
         .clone()
         .unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
+
+    let base_ref = resolve_setting(args.base.as_deref(), selected.base.as_deref(), "HEAD");
+    let integration = resolve_setting(
+        args.into.as_deref(),
+        selected.integration.as_deref(),
+        "agentic-integration",
+    );
+    worktree::verify_ref(&repo, &base_ref).await?;
 
     let mut goal = if args.goal.is_empty() {
         match run_goal_input(&selected.name)? {
@@ -375,9 +403,19 @@ async fn main() -> anyhow::Result<()> {
     let repo_run = repo.clone();
     let goal_run = goal.clone();
     let verify_run = verify_cmd.clone();
+    let base_run = base_ref.clone();
+    let integration_run = integration.clone();
     let pipeline_handle = tokio::spawn(async move {
-        if let Err(e) =
-            run_pipeline(&repo_run, &goal_run, &verify_run, refine_cost, &pipeline_tx).await
+        if let Err(e) = run_pipeline(
+            &repo_run,
+            &goal_run,
+            &verify_run,
+            &base_run,
+            &integration_run,
+            refine_cost,
+            &pipeline_tx,
+        )
+        .await
         {
             let _ = pipeline_tx.send(AppEvent::Fatal(e.to_string()));
         }
@@ -434,7 +472,7 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    print_report(&app, &repo);
+    print_report(&app, &repo, &integration);
     Ok(())
 }
 
@@ -443,6 +481,8 @@ async fn run_pipeline(
     repo: &std::path::Path,
     goal: &str,
     verify_cmd: &str,
+    base_ref: &str,
+    integration: &str,
     refine_cost: f64,
     tx: &mpsc::UnboundedSender<AppEvent>,
 ) -> anyhow::Result<()> {
@@ -484,7 +524,8 @@ async fn run_pipeline(
         repo: repo.to_path_buf(),
         goal: goal.to_string(),
         verify_cmd: verify_cmd.to_string(),
-        integration_branch: "agentic-integration".to_string(),
+        integration_branch: integration.to_string(),
+        base_ref: base_ref.to_string(),
         budget_usd: config::GLOBAL_BUDGET_USD,
         initial_cost: refine_cost + outcome.cost,
     };
@@ -492,7 +533,7 @@ async fn run_pipeline(
     Ok(())
 }
 
-fn print_report(app: &App, repo: &std::path::Path) {
+fn print_report(app: &App, repo: &std::path::Path, integration: &str) {
     println!("\n=== Run report ===");
     println!("Workspace: {}", app.workspace);
     println!("Goal: {}", app.goal);
@@ -510,7 +551,7 @@ fn print_report(app: &App, repo: &std::path::Path) {
     match app.phase {
         Phase::Done => {
             println!(
-                "Merged work is on branch 'agentic-integration' in {}. Review and merge to your main branch.",
+                "Merged work is on branch '{integration}' in {}. Review and merge to your main branch.",
                 repo.display()
             );
         }
@@ -520,5 +561,20 @@ fn print_report(app: &App, repo: &std::path::Path) {
             }
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resolve_setting_prefers_flag_then_config_then_default() {
+        assert_eq!(
+            resolve_setting(Some("flag"), Some("config"), "default"),
+            "flag"
+        );
+        assert_eq!(resolve_setting(None, Some("config"), "default"), "config");
+        assert_eq!(resolve_setting(None, None, "default"), "default");
     }
 }

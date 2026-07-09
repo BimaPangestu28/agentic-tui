@@ -102,6 +102,7 @@ pub async fn merge_into(
     repo: &Path,
     branch: &str,
     integration_branch: &str,
+    base_ref: &str,
 ) -> anyhow::Result<MergeResult> {
     // The epic branch must exist, so a genuine merge failure can only be a
     // content conflict, not a bad ref.
@@ -113,13 +114,13 @@ pub async fn merge_into(
         anyhow::bail!("cannot merge unknown branch: {branch}");
     }
 
-    // Create the integration branch from HEAD on first use.
+    // Create the integration branch from the base ref on first use.
     let integration_exists = run_git(repo, &["rev-parse", "--verify", integration_branch])
         .await?
         .status
         .success();
     if !integration_exists {
-        run_git_checked(repo, &["branch", integration_branch, "HEAD"]).await?;
+        run_git_checked(repo, &["branch", integration_branch, base_ref]).await?;
     }
 
     // Ensure a dedicated worktree holds the integration branch, so merges never
@@ -141,6 +142,19 @@ pub async fn merge_into(
         let _ = run_git(&integration_path, &["merge", "--abort"]).await;
         Ok(MergeResult::Conflict)
     }
+}
+
+/// Confirm a git ref resolves in the repo, so an invalid base fails the run
+/// before any session starts.
+pub async fn verify_ref(repo: &Path, reference: &str) -> anyhow::Result<()> {
+    let resolves = run_git(repo, &["rev-parse", "--verify", reference])
+        .await?
+        .status
+        .success();
+    if !resolves {
+        anyhow::bail!("base ref does not resolve in the repository: {reference}");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -182,7 +196,9 @@ mod tests {
         git(&wt.path, &["add", "-A"]).await;
         git(&wt.path, &["commit", "-m", "epic-1 work"]).await;
 
-        let result = merge_into(&tmp, &wt.branch, "integration").await.unwrap();
+        let result = merge_into(&tmp, &wt.branch, "integration", "HEAD")
+            .await
+            .unwrap();
         assert_eq!(result, MergeResult::Merged);
         let integration_file = tmp.join(".agentic-worktrees/.integration/feature.txt");
         assert!(
@@ -207,7 +223,9 @@ mod tests {
             .unwrap();
         git(&wt1.path, &["commit", "-am", "epic-1"]).await;
         assert_eq!(
-            merge_into(&tmp, &wt1.branch, "integration").await.unwrap(),
+            merge_into(&tmp, &wt1.branch, "integration", "HEAD")
+                .await
+                .unwrap(),
             MergeResult::Merged
         );
 
@@ -217,7 +235,9 @@ mod tests {
             .unwrap();
         git(&wt2.path, &["commit", "-am", "epic-2"]).await;
         assert_eq!(
-            merge_into(&tmp, &wt2.branch, "integration").await.unwrap(),
+            merge_into(&tmp, &wt2.branch, "integration", "HEAD")
+                .await
+                .unwrap(),
             MergeResult::Conflict
         );
 
@@ -240,7 +260,9 @@ mod tests {
         git(&wt.path, &["add", "-A"]).await;
         git(&wt.path, &["commit", "-m", "epic-1 work"]).await;
         assert_eq!(
-            merge_into(&tmp, &wt.branch, "integration").await.unwrap(),
+            merge_into(&tmp, &wt.branch, "integration", "HEAD")
+                .await
+                .unwrap(),
             MergeResult::Merged
         );
 
@@ -283,6 +305,62 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn integration_branch_is_created_from_the_base_ref() {
+        let tmp = std::env::temp_dir().join(format!("wt-basref-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        // A develop branch that main does not have.
+        git(&tmp, &["branch", "develop"]).await;
+        git(&tmp, &["checkout", "develop"]).await;
+        tokio::fs::write(tmp.join("develop_only.txt"), "d\n")
+            .await
+            .unwrap();
+        git(&tmp, &["add", "-A"]).await;
+        git(&tmp, &["commit", "-m", "develop"]).await;
+        git(&tmp, &["checkout", "main"]).await;
+
+        // An epic based on develop, merged with base_ref = develop.
+        let wt = create(&tmp, "epic-1", "develop").await.unwrap();
+        tokio::fs::write(wt.path.join("feature.txt"), "f\n")
+            .await
+            .unwrap();
+        git(&wt.path, &["add", "-A"]).await;
+        git(&wt.path, &["commit", "-m", "epic-1"]).await;
+        assert_eq!(
+            merge_into(&tmp, &wt.branch, "integration", "develop")
+                .await
+                .unwrap(),
+            MergeResult::Merged
+        );
+
+        // The integration branch was rooted at develop, so it carries develop_only.txt
+        // (which main lacks) as well as the epic's feature.txt.
+        let integ = tmp.join(".agentic-worktrees/.integration");
+        assert!(
+            integ.join("develop_only.txt").exists(),
+            "integration must be created from the base ref (develop)"
+        );
+        assert!(integ.join("feature.txt").exists());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn verify_ref_accepts_a_real_ref_and_rejects_a_missing_one() {
+        let tmp = std::env::temp_dir().join(format!("wt-verify-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        assert!(verify_ref(&tmp, "HEAD").await.is_ok());
+        assert!(verify_ref(&tmp, "no-such-branch").await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
     async fn an_epic_based_on_integration_inherits_merged_work() {
         let tmp = std::env::temp_dir().join(format!("wt-baseref-{}", std::process::id()));
         let _ = tokio::fs::remove_dir_all(&tmp).await;
@@ -297,7 +375,9 @@ mod tests {
         git(&wt1.path, &["add", "-A"]).await;
         git(&wt1.path, &["commit", "-m", "epic-1"]).await;
         assert_eq!(
-            merge_into(&tmp, &wt1.branch, "integration").await.unwrap(),
+            merge_into(&tmp, &wt1.branch, "integration", "HEAD")
+                .await
+                .unwrap(),
             MergeResult::Merged
         );
 
