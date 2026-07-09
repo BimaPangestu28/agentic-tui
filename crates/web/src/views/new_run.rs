@@ -279,7 +279,7 @@ pub fn NewRun() -> impl IntoView {
                     />
                     "Refine the goal before planning"
                 </label>
-                <button type="button" on:click=on_start.clone()>
+                <button type="button" class="btn-primary" on:click=on_start.clone()>
                     {move || {
                         if refine_enabled.get() {
                             "Refine & plan"

@@ -17,7 +17,10 @@ fn App() -> impl IntoView {
     view! {
         <Router>
             <header class="app-bar">
-                <A href="/">"\u{2b21} Agentic Orchestrator"</A>
+                <A href="/">
+                    <span class="hex">"\u{2b21}"</span>
+                    " Agentic Orchestrator"
+                </A>
             </header>
             <main class="app-main">
                 <Routes fallback=|| view! { <h1>"Not found"</h1> }>

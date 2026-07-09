@@ -214,6 +214,7 @@ pub fn Run() -> impl IntoView {
                                     view! {
                                         <button
                                             type="button"
+                                            class="btn-danger"
                                             disabled=move || aborting.get()
                                             on:click=on_abort.clone()
                                         >
