@@ -85,23 +85,22 @@ fn kanban_column_view(
     let cards: Vec<_> = epics
         .into_iter()
         .map(|epic| {
-            let hold_label = if column == KanbanColumn::Todo
-                && is_on_hold(&epic.depends_on, &status_by_id)
-            {
-                let waiting: Vec<String> = epic
-                    .depends_on
-                    .iter()
-                    .filter(|dep| status_by_id.get(*dep) != Some(&EpicStatus::Merged))
-                    .cloned()
-                    .collect();
-                Some(if waiting.is_empty() {
-                    "on hold".to_string()
+            let hold_label =
+                if column == KanbanColumn::Todo && is_on_hold(&epic.depends_on, &status_by_id) {
+                    let waiting: Vec<String> = epic
+                        .depends_on
+                        .iter()
+                        .filter(|dep| status_by_id.get(*dep) != Some(&EpicStatus::Merged))
+                        .cloned()
+                        .collect();
+                    Some(if waiting.is_empty() {
+                        "on hold".to_string()
+                    } else {
+                        format!("on hold \u{00b7} waits on {}", waiting.join(", "))
+                    })
                 } else {
-                    format!("on hold \u{00b7} waits on {}", waiting.join(", "))
-                })
-            } else {
-                None
-            };
+                    None
+                };
             epic_card(epic, hold_label)
         })
         .collect();
