@@ -8,6 +8,8 @@ use std::path::{Path, PathBuf};
 pub struct Workspace {
     pub name: String,
     pub path: PathBuf,
+    pub base: Option<String>,
+    pub integration: Option<String>,
 }
 
 use serde::{Deserialize, Serialize};
@@ -22,6 +24,10 @@ struct WorkspacesFile {
 struct RawWorkspace {
     name: String,
     path: String,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    integration: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -33,6 +39,10 @@ struct WorkspacesOut {
 struct RawWorkspaceOut {
     name: String,
     path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    integration: Option<String>,
 }
 
 /// Default location of the workspace registry.
@@ -64,6 +74,8 @@ fn parse_workspaces_str(text: &str) -> anyhow::Result<Vec<Workspace>> {
         .map(|raw| Workspace {
             name: raw.name,
             path: expand_tilde(&raw.path),
+            base: raw.base,
+            integration: raw.integration,
         })
         .collect();
     Ok(workspaces)
@@ -103,6 +115,8 @@ pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::
             .map(|w| RawWorkspaceOut {
                 name: w.name.clone(),
                 path: w.path.to_string_lossy().to_string(),
+                base: w.base.clone(),
+                integration: w.integration.clone(),
             })
             .collect(),
     };
@@ -209,7 +223,12 @@ fn workspaces_from_paths(paths: Vec<PathBuf>) -> Vec<Workspace> {
             } else {
                 base
             };
-            Workspace { name, path }
+            Workspace {
+                name,
+                path,
+                base: None,
+                integration: None,
+            }
         })
         .collect()
 }
@@ -258,6 +277,8 @@ path = "/tmp/portfolio"
         let workspace = Workspace {
             name: "ghost".to_string(),
             path: PathBuf::from("/nonexistent/path/here"),
+            base: None,
+            integration: None,
         };
         assert!(validate(&workspace).is_err());
     }
@@ -322,10 +343,14 @@ path = "/tmp/portfolio"
             Workspace {
                 name: "a".to_string(),
                 path: PathBuf::from("/tmp/a"),
+                base: None,
+                integration: None,
             },
             Workspace {
                 name: "b".to_string(),
                 path: PathBuf::from("/tmp/b"),
+                base: None,
+                integration: None,
             },
         ];
         save_workspaces(&config, &first).unwrap();
@@ -339,10 +364,14 @@ path = "/tmp/portfolio"
             Workspace {
                 name: "b-renamed".to_string(),
                 path: PathBuf::from("/tmp/b"),
+                base: None,
+                integration: None,
             },
             Workspace {
                 name: "c".to_string(),
                 path: PathBuf::from("/tmp/c"),
+                base: None,
+                integration: None,
             },
         ];
         save_workspaces(&config, &more).unwrap();
@@ -375,6 +404,8 @@ path = "/tmp/portfolio"
             &[Workspace {
                 name: "new".to_string(),
                 path: PathBuf::from("/tmp/new"),
+                base: None,
+                integration: None,
             }],
         );
         assert!(
@@ -408,5 +439,62 @@ path = "/tmp/portfolio"
         );
 
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn parses_optional_base_and_integration() {
+        let toml_text = r#"
+[[workspace]]
+name = "a"
+path = "/tmp/a"
+base = "develop"
+integration = "agentic-wip"
+
+[[workspace]]
+name = "b"
+path = "/tmp/b"
+"#;
+        let ws = parse_workspaces_str(toml_text).unwrap();
+        assert_eq!(ws[0].base.as_deref(), Some("develop"));
+        assert_eq!(ws[0].integration.as_deref(), Some("agentic-wip"));
+        assert_eq!(ws[1].base, None);
+        assert_eq!(ws[1].integration, None);
+    }
+
+    #[test]
+    fn save_round_trips_base_and_integration() {
+        let dir = std::env::temp_dir().join(format!("save-branches-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("workspaces.toml");
+        let list = vec![
+            Workspace {
+                name: "a".to_string(),
+                path: PathBuf::from("/tmp/a"),
+                base: Some("develop".to_string()),
+                integration: Some("agentic-wip".to_string()),
+            },
+            Workspace {
+                name: "b".to_string(),
+                path: PathBuf::from("/tmp/b"),
+                base: None,
+                integration: None,
+            },
+        ];
+        save_workspaces(&config, &list).unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            !text.contains("base = \"\""),
+            "an unset field must not serialize as an empty key"
+        );
+
+        let loaded = load_workspaces(&config).unwrap();
+        let a = loaded.iter().find(|w| w.name == "a").unwrap();
+        assert_eq!(a.base.as_deref(), Some("develop"));
+        assert_eq!(a.integration.as_deref(), Some("agentic-wip"));
+        let b = loaded.iter().find(|w| w.name == "b").unwrap();
+        assert_eq!(b.base, None);
+        assert_eq!(b.integration, None);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

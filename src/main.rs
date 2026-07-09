@@ -97,7 +97,12 @@ fn resolve_workspace(args: &Args, workspaces: &[Workspace]) -> anyhow::Result<Op
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "workspace".to_string());
-        return Ok(Some(Workspace { name, path }));
+        return Ok(Some(Workspace {
+            name,
+            path,
+            base: None,
+            integration: None,
+        }));
     }
 
     let config = workspace::default_config_path();
