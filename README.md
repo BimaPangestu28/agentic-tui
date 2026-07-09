@@ -64,7 +64,12 @@ Workspaces live in `~/.config/agentic-tui/workspaces.toml`. Each entry needs a
 [[workspace]]
 name = "greentic"
 path = "~/Works/personal/greentic"
+base = "develop"              # optional: worktree base ref (default HEAD)
+integration = "agentic-wip"   # optional: merge target (default agentic-integration)
 ```
+
+`base` and `integration` are optional per-workspace defaults. A `--base` or
+`--into` flag on the command line overrides the matching field for that run.
 
 Add one `[[workspace]]` block per project. Every workspace path must be an
 existing directory that is a git repository (it must contain a `.git`), or the
@@ -116,6 +121,20 @@ Override the verify command per run with `--verify`:
 ```bash
 cargo run -- "Add a health check endpoint" --workspace greentic --verify "npm test"
 ```
+
+By default each run branches its epic worktrees from the workspace `HEAD` and
+merges passing epics into `agentic-integration`. Override either with a flag:
+
+```bash
+cargo run -- "Add a health check endpoint" --workspace greentic --base develop --into agentic-wip
+```
+
+`--base <ref>` is the branch, tag, or commit new epic worktrees start from (and
+the integration branch is created from it on first use). `--into <branch>` is
+where passing epics merge; if that branch already exists, the work merges into
+it directly, so pointing it at a real branch such as `develop` merges there
+without a manual review step. An invalid `--base` aborts the run before any
+Claude session starts.
 
 Press `q` or Ctrl-C at any point to abort. In-flight epic sessions are killed;
 epics that already merged stay merged on `agentic-integration`.
