@@ -5,7 +5,10 @@
 //! a human-readable `String`.
 
 use gloo_net::http::Request;
-use shared::{SaveRequest, ScanRequest, ScanResponse, WorkspaceDto};
+use shared::{
+    RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
+    SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse, WorkspaceDto,
+};
 
 /// Reads the response body as `T` when the status is a success code, or
 /// builds an error string from the status and body text otherwise.
@@ -63,4 +66,54 @@ pub async fn save(workspaces: &[WorkspaceDto]) -> Result<(), String> {
         return Err(format!("save failed with status {status}: {body}"));
     }
     Ok(())
+}
+
+/// `POST /api/runs` -> starts a pipeline run. Returns the server's error
+/// message text on a 400 (validation failure) or 409 (a run is already
+/// active), so the caller can show it inline.
+pub async fn start_run(request: StartRunRequest) -> Result<StartRunResponse, String> {
+    let response = Request::post("/api/runs")
+        .json(&request)
+        .map_err(|err| format!("failed to build start-run request: {err}"))?
+        .send()
+        .await
+        .map_err(|err| format!("failed to reach the run endpoint: {err}"))?;
+    into_result(response).await
+}
+
+/// `POST /api/refine/questions` -> the pass-1 refined goal, at most a
+/// handful of clarifying questions, and the cost incurred.
+pub async fn refine_questions(repo: &str, goal: &str) -> Result<RefineQuestionsResponse, String> {
+    let body = RefineQuestionsRequest {
+        repo: repo.to_string(),
+        goal: goal.to_string(),
+    };
+    let response = Request::post("/api/refine/questions")
+        .json(&body)
+        .map_err(|err| format!("failed to build refine-questions request: {err}"))?
+        .send()
+        .await
+        .map_err(|err| format!("failed to reach the refine-questions endpoint: {err}"))?;
+    into_result(response).await
+}
+
+/// `POST /api/refine/finalize` -> the final refined goal folding in the
+/// user's answers, and the cost incurred by this pass.
+pub async fn refine_finalize(
+    repo: &str,
+    goal: &str,
+    answers: Vec<(String, String)>,
+) -> Result<RefineFinalizeResponse, String> {
+    let body = RefineFinalizeRequest {
+        repo: repo.to_string(),
+        goal: goal.to_string(),
+        answers,
+    };
+    let response = Request::post("/api/refine/finalize")
+        .json(&body)
+        .map_err(|err| format!("failed to build refine-finalize request: {err}"))?
+        .send()
+        .await
+        .map_err(|err| format!("failed to reach the refine-finalize endpoint: {err}"))?;
+    into_result(response).await
 }

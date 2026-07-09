@@ -9,13 +9,7 @@ use leptos::prelude::*;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
-use views::Workspaces;
-
-/// Placeholder for the new-run wizard, wired up in a later task.
-#[component]
-fn NewRun() -> impl IntoView {
-    view! { <h1>"New run"</h1> }
-}
+use views::{NewRun, Workspaces};
 
 /// Placeholder for the run dashboard, wired up in a later task.
 #[component]
