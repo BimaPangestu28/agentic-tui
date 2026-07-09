@@ -79,8 +79,17 @@ pub fn load_workspaces(config_path: &Path) -> anyhow::Result<Vec<Workspace>> {
 /// Persist `workspaces` to `config_path`, merging with any entries already
 /// saved there. Entries are unioned by path and the existing name wins on a
 /// path conflict. The parent directory is created if it does not exist.
+///
+/// The merge starts from an empty list only when `config_path` does not
+/// exist yet. If the file exists but cannot be parsed (malformed or
+/// unreadable), this function returns an error and writes nothing, so an
+/// existing config is never silently overwritten.
 pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::Result<()> {
-    let mut merged: Vec<Workspace> = load_workspaces(config_path).unwrap_or_default();
+    let mut merged: Vec<Workspace> = match load_workspaces(config_path) {
+        Ok(existing) => existing,
+        Err(_) if !config_path.exists() => Vec::new(),
+        Err(e) => return Err(e),
+    };
     let mut seen: HashSet<PathBuf> = merged.iter().map(|w| w.path.clone()).collect();
     for workspace in workspaces {
         if seen.insert(workspace.path.clone()) {
@@ -156,10 +165,11 @@ pub fn scan_for_repos(root: &Path, max_depth: usize) -> Vec<Workspace> {
             Err(_) => continue,
         };
         for entry in entries.flatten() {
-            let path = entry.path();
-            if !path.is_dir() {
-                continue;
+            match entry.file_type() {
+                Ok(ft) if ft.is_dir() => {}
+                _ => continue,
             }
+            let path = entry.path();
             let name = entry.file_name();
             let name = name.to_string_lossy();
             if name.starts_with('.') || PRUNE.contains(&name.as_ref()) {
@@ -349,5 +359,54 @@ path = "/tmp/portfolio"
         assert_eq!(b.name, "b", "existing name is kept on a path conflict");
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_refuses_to_overwrite_a_malformed_config() {
+        let dir = std::env::temp_dir().join(format!("save-corrupt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("workspaces.toml");
+        let malformed = "this is = not = valid toml";
+        std::fs::write(&config, malformed).unwrap();
+
+        let result = save_workspaces(
+            &config,
+            &[Workspace {
+                name: "new".to_string(),
+                path: PathBuf::from("/tmp/new"),
+            }],
+        );
+        assert!(
+            result.is_err(),
+            "save_workspaces must not overwrite a config it cannot parse"
+        );
+
+        let on_disk = std::fs::read_to_string(&config).unwrap();
+        assert_eq!(
+            on_disk, malformed,
+            "the malformed file must be left untouched"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn scan_skips_symlinked_directories() {
+        let base = std::env::temp_dir().join(format!("scan-symlink-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("real/.git")).unwrap();
+        std::os::unix::fs::symlink(base.join("real"), base.join("link")).unwrap();
+
+        let found = scan_for_repos(&base, DEFAULT_SCAN_DEPTH);
+        let paths: std::collections::HashSet<_> = found.iter().map(|w| w.path.clone()).collect();
+
+        assert!(paths.contains(&base.join("real")));
+        assert!(
+            !paths.contains(&base.join("link")),
+            "a symlinked directory must not be traversed"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 }
