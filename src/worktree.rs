@@ -145,6 +145,20 @@ pub async fn merge_into(
     }
 }
 
+/// The branch checked out in the repo's main working tree, or None if HEAD is
+/// detached. Used to reject an integration target that cannot get its own
+/// worktree.
+pub async fn current_branch(repo: &Path) -> anyhow::Result<Option<String>> {
+    let output = run_git(repo, &["symbolic-ref", "--quiet", "--short", "HEAD"]).await?;
+    if output.status.success() {
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
 /// Confirm a git ref resolves in the repo, so an invalid base fails the run
 /// before any session starts.
 pub async fn verify_ref(repo: &Path, reference: &str) -> anyhow::Result<()> {
@@ -357,6 +371,18 @@ mod tests {
 
         assert!(verify_ref(&tmp, "HEAD").await.is_ok());
         assert!(verify_ref(&tmp, "no-such-branch").await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn current_branch_reports_the_checked_out_branch() {
+        let tmp = std::env::temp_dir().join(format!("wt-curbranch-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+
+        assert_eq!(current_branch(&tmp).await.unwrap().as_deref(), Some("main"));
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
     }

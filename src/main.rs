@@ -332,6 +332,14 @@ async fn main() -> anyhow::Result<()> {
         "agentic-integration",
     );
     worktree::verify_ref(&repo, &base_ref).await?;
+    if integration.trim().is_empty() {
+        anyhow::bail!("--into requires a branch name");
+    }
+    if worktree::current_branch(&repo).await?.as_deref() == Some(integration.as_str()) {
+        anyhow::bail!(
+            "cannot merge into '{integration}': it is checked out in the workspace. Check out a different branch first, or choose another --into target."
+        );
+    }
 
     let mut goal = if args.goal.is_empty() {
         match run_goal_input(&selected.name)? {

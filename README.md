@@ -44,15 +44,16 @@ workspace picker (or --workspace) --> Plan stage --> plan.json
   failed epic is retried once from a fresh worktree before being marked
   failed for good.
 - **Integrate.** Each epic that passes verification is merged into the
-  `agentic-integration` branch, in the order the epics finish. Merges happen
+  `agentic-integration` branch by default, in the order the epics finish. Merges happen
   in a dedicated worktree so they never disturb the workspace's main working
   tree. A merge conflict is reported, not auto-resolved: the epic's branch
   and worktree are kept so you can merge it by hand.
 
 When the run ends, the tool prints a report: one line per epic with its final
 status (merged, failed, skipped, or conflict), the total cost, and, if any
-epic merged, a reminder that the work is on `agentic-integration` in the
-workspace and needs to be reviewed and merged to your main branch by hand.
+epic merged, a reminder that the work is on the integration branch (by default
+`agentic-integration`) in the workspace and needs to be reviewed and merged to
+your main branch by hand.
 
 ## Configuring workspaces
 
@@ -137,7 +138,7 @@ without a manual review step. An invalid `--base` aborts the run before any
 Claude session starts.
 
 Press `q` or Ctrl-C at any point to abort. In-flight epic sessions are killed;
-epics that already merged stay merged on `agentic-integration`.
+epics that already merged stay merged on the integration branch.
 
 Equivalent shortcuts through the Makefile:
 
@@ -195,6 +196,12 @@ make run GOAL="Add a health check endpoint" WORKSPACE=greentic
   in flight still finish, so the final cost can slightly exceed the budget.
 - Merge conflicts are reported and left on the `agentic/<epic-id>` branch for
   manual merge. They are not auto-resolved.
+- The integration branch (default `agentic-integration`) is checked out in a
+  dedicated worktree under `.agentic-worktrees/.integration`, which is left in
+  place after a normal run. If you point `--into` at a branch you also want to
+  check out in your main tree, remove that worktree first (`git worktree remove`).
+  A target branch that is already checked out in the main working tree is
+  rejected before the run starts.
 
 ## License
 
