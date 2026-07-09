@@ -62,14 +62,15 @@ fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result
     Ok(())
 }
 
-/// Run one refine pass: a one-shot claude session that writes the result JSON,
-/// which we read and parse. Returns the parsed result and the pass cost.
+/// Run one refine pass. Returns the cost incurred (which is real money even if
+/// the session failed to write a usable file) together with the parsed result
+/// or the read/parse error. The cost is 0.0 only when the session did not run.
 async fn run_refine_pass(
     repo: &Path,
     prompt: &str,
     out_path: &Path,
     tx: &mpsc::UnboundedSender<AppEvent>,
-) -> anyhow::Result<(RefineResult, f64)> {
+) -> (f64, anyhow::Result<RefineResult>) {
     let _ = std::fs::remove_file(out_path);
     let spec = engine::StageSpec {
         tag: "refine",
@@ -80,11 +81,14 @@ async fn run_refine_pass(
         budget_usd: config::REFINE_BUDGET_USD,
         prompt,
     };
-    let outcome = engine::run_stage(&spec, tx).await?;
-    let text = std::fs::read_to_string(out_path)
-        .map_err(|e| anyhow::anyhow!(".agentic-refine.json was not written: {e}"))?;
-    let result = parse_refine(&text)?;
-    Ok((result, outcome.cost))
+    let outcome = match engine::run_stage(&spec, tx).await {
+        Ok(outcome) => outcome,
+        Err(e) => return (0.0, Err(e)),
+    };
+    let result = std::fs::read_to_string(out_path)
+        .map_err(|e| anyhow::anyhow!(".agentic-refine.json was not written: {e}"))
+        .and_then(|text| parse_refine(&text));
+    (outcome.cost, result)
 }
 
 /// Run the goal-refine flow on its own alternate screen. Returns the confirmed
@@ -107,15 +111,16 @@ pub async fn run(repo: &Path, goal: &str) -> anyhow::Result<RefineOutcome> {
     // Pass 1: rewrite the goal and gather questions. On any failure, fall back
     // to the original goal.
     terminal.draw(|f| ui::render_refining(f, "reading the repository and sharpening the goal"))?;
-    let (result1, cost1) = match run_refine_pass(
+    let (cost1, result1) = run_refine_pass(
         repo,
         &config::refine_questions_prompt(goal, &out_path.to_string_lossy()),
         &out_path,
         &tx,
     )
-    .await
-    {
-        Ok(pass) => pass,
+    .await;
+    total_cost += cost1;
+    let result1 = match result1 {
+        Ok(result) => result,
         Err(_) => {
             teardown(&mut terminal)?;
             return Ok(RefineOutcome {
@@ -124,7 +129,6 @@ pub async fn run(repo: &Path, goal: &str) -> anyhow::Result<RefineOutcome> {
             });
         }
     };
-    total_cost += cost1;
 
     let mut questions = result1.questions;
     questions.truncate(config::REFINE_MAX_QUESTIONS);
@@ -175,15 +179,15 @@ pub async fn run(repo: &Path, goal: &str) -> anyhow::Result<RefineOutcome> {
         // Pass 2: fold the answers into a final goal. Keep pass 1's rewrite if
         // this pass fails.
         terminal.draw(|f| ui::render_refining(f, "folding your answers into a final goal"))?;
-        if let Ok((result2, cost2)) = run_refine_pass(
+        let (cost2, result2) = run_refine_pass(
             repo,
             &config::refine_finalize_prompt(goal, &answers, &out_path.to_string_lossy()),
             &out_path,
             &tx,
         )
-        .await
-        {
-            total_cost += cost2;
+        .await;
+        total_cost += cost2;
+        if let Ok(result2) = result2 {
             final_goal = result2.refined_goal;
         }
     }

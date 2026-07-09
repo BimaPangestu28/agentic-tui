@@ -454,7 +454,7 @@ async fn run_pipeline(
         prompt: &prompt,
     };
     let outcome = engine::run_stage(&spec, tx).await?;
-    let _ = tx.send(AppEvent::Cost(outcome.cost));
+    let _ = tx.send(AppEvent::Cost(refine_cost + outcome.cost));
 
     let plan_text = std::fs::read_to_string(&plan_path)
         .map_err(|e| anyhow::anyhow!("plan.json was not written: {e}"))?;
