@@ -104,6 +104,13 @@ cargo run -- "Add a health check endpoint" --workspace greentic
 cargo run -- "Add a health check endpoint" --workspace /path/to/repo
 ```
 
+Before planning, the tool runs a goal-refine step: a short `claude` pass reads
+the repository, rewrites your goal to be more specific, and may ask a few
+clarifying questions. You answer them one at a time, a second pass folds the
+answers into a final goal, and you confirm (and can edit) that goal before
+planning starts. Skip the whole step with `--no-refine`, or press Esc during it
+to plan with your original goal. The refine cost counts toward the run budget.
+
 Override the verify command per run with `--verify`:
 
 ```bash
@@ -124,6 +131,9 @@ make run GOAL="Add a health check endpoint" WORKSPACE=greentic
 - `MODEL_PLAN` and `MODEL_EPIC` select which model runs each stage. Plan
   defaults to `opus` because plan quality drives every epic's accuracy. Epics
   default to `sonnet` to save on your limit.
+- `MODEL_REFINE`, `REFINE_BUDGET_USD`, and `REFINE_MAX_QUESTIONS` tune the
+  goal-refine step (model, per-pass budget, and how many clarifying questions it
+  may ask). Pass `--no-refine` on the command line to skip refining entirely.
 - `GLOBAL_BUDGET_USD` stops the orchestrator from starting new epics once
   accumulated cost crosses this line. Epics already running still finish.
 - `EPIC_BUDGET_USD` caps the cost of a single stage session (the plan, or one
