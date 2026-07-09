@@ -1,25 +1,18 @@
 //! The goal-refine step: a claude pass rewrites the goal and proposes
-//! clarifying questions written to `.agentic-refine.json`, the user answers
-//! them, a second pass finalizes the goal, and the user confirms it. Reuses the
-//! `plan.json` pattern: each pass writes a JSON file we parse here.
+//! clarifying questions written to `.agentic-refine.json`; the browser
+//! collects the user's answers, then a second pass finalizes the goal.
+//! Reuses the `plan.json` pattern: each pass writes a JSON file we parse here.
 
 use serde::Deserialize;
 
-use std::io::{self, Stdout};
 use std::path::Path;
 
-use crossterm::{
-    event::{Event, KeyCode, KeyModifiers},
-    execute,
-    terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
-};
-use ratatui::{backend::CrosstermBackend, Terminal};
 use tokio::sync::mpsc;
+
+use shared::StageEvent;
 
 use crate::config;
 use crate::engine;
-use crate::event::AppEvent;
-use crate::ui;
 
 /// The JSON a refine pass writes to `.agentic-refine.json`.
 #[derive(Debug, Clone, Deserialize)]
@@ -27,14 +20,6 @@ pub struct RefineResult {
     pub refined_goal: String,
     #[serde(default)]
     pub questions: Vec<String>,
-}
-
-/// The result of the whole refine flow. `goal` is `None` only when the user
-/// cancelled the run.
-#[derive(Debug, Clone)]
-pub struct RefineOutcome {
-    pub goal: Option<String>,
-    pub cost: f64,
 }
 
 /// Parse the JSON a refine pass wrote. A missing `questions` defaults to empty;
@@ -48,20 +33,6 @@ pub fn parse_refine(json: &str) -> anyhow::Result<RefineResult> {
     Ok(result)
 }
 
-/// How the user left a single question screen.
-enum Answered {
-    Entered,
-    SkipRefine,
-    Cancel,
-}
-
-/// Restore the terminal from the refine flow's alternate screen.
-fn teardown(terminal: &mut Terminal<CrosstermBackend<Stdout>>) -> anyhow::Result<()> {
-    disable_raw_mode()?;
-    execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
-    Ok(())
-}
-
 /// Run one refine pass. Returns the cost incurred (which is real money even if
 /// the session failed to write a usable file) together with the parsed result
 /// or the read/parse error. The cost is 0.0 only when the session did not run.
@@ -69,7 +40,7 @@ async fn run_refine_pass(
     repo: &Path,
     prompt: &str,
     out_path: &Path,
-    tx: &mpsc::UnboundedSender<AppEvent>,
+    tx: &mpsc::UnboundedSender<StageEvent>,
 ) -> (f64, anyhow::Result<RefineResult>) {
     let _ = std::fs::remove_file(out_path);
     let spec = engine::StageSpec {
@@ -97,7 +68,7 @@ async fn run_refine_pass(
 /// unparseable), falls back to the original goal with no questions. The cost
 /// is real either way, since it is billed once the session runs.
 pub async fn questions(repo: &Path, goal: &str) -> (String, Vec<String>, f64) {
-    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+    let (tx, _rx) = mpsc::unbounded_channel::<StageEvent>();
     let out_path = repo.join(".agentic-refine.json");
     let (cost, result) = run_refine_pass(
         repo,
@@ -120,7 +91,7 @@ pub async fn questions(repo: &Path, goal: &str) -> (String, Vec<String>, f64) {
 /// goal. On failure, falls back to the original goal; the cost is still
 /// reported.
 pub async fn finalize(repo: &Path, goal: &str, answers: &[(String, String)]) -> (String, f64) {
-    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
+    let (tx, _rx) = mpsc::unbounded_channel::<StageEvent>();
     let out_path = repo.join(".agentic-refine.json");
     let (cost, result) = run_refine_pass(
         repo,
@@ -133,141 +104,6 @@ pub async fn finalize(repo: &Path, goal: &str, answers: &[(String, String)]) -> 
         Ok(result) => (result.refined_goal, cost),
         Err(_) => (goal.to_string(), cost),
     }
-}
-
-/// Run the goal-refine flow on its own alternate screen. Returns the confirmed
-/// goal (or the original goal if refining is skipped or fails) and the total
-/// refine cost. A `None` goal means the user cancelled the run.
-pub async fn run(repo: &Path, goal: &str) -> anyhow::Result<RefineOutcome> {
-    // The refine passes stream events; the run UI does not exist yet, so we
-    // drain them into a channel we hold but never read.
-    let (tx, _rx) = mpsc::unbounded_channel::<AppEvent>();
-    let out_path = repo.join(".agentic-refine.json");
-
-    enable_raw_mode()?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen)?;
-    let backend = CrosstermBackend::new(stdout);
-    let mut terminal = Terminal::new(backend)?;
-
-    let mut total_cost = 0.0f64;
-
-    // Pass 1: rewrite the goal and gather questions. On any failure, fall back
-    // to the original goal.
-    terminal.draw(|f| ui::render_refining(f, "reading the repository and sharpening the goal"))?;
-    let (cost1, result1) = run_refine_pass(
-        repo,
-        &config::refine_questions_prompt(goal, &out_path.to_string_lossy()),
-        &out_path,
-        &tx,
-    )
-    .await;
-    total_cost += cost1;
-    let result1 = match result1 {
-        Ok(result) => result,
-        Err(_) => {
-            teardown(&mut terminal)?;
-            return Ok(RefineOutcome {
-                goal: Some(goal.to_string()),
-                cost: total_cost,
-            });
-        }
-    };
-
-    let mut questions = result1.questions;
-    questions.truncate(config::REFINE_MAX_QUESTIONS);
-    let mut final_goal = result1.refined_goal;
-
-    if !questions.is_empty() {
-        let total = questions.len();
-        let mut answers: Vec<(String, String)> = Vec::new();
-        for (index, question) in questions.iter().enumerate() {
-            let mut buffer = String::new();
-            let outcome = loop {
-                terminal
-                    .draw(|f| ui::render_refine_question(f, question, index + 1, total, &buffer))?;
-                if let Event::Key(key) = crossterm::event::read()? {
-                    match (key.code, key.modifiers) {
-                        (KeyCode::Char('c'), KeyModifiers::CONTROL) => break Answered::Cancel,
-                        (KeyCode::Esc, _) => break Answered::SkipRefine,
-                        (KeyCode::Enter, _) => break Answered::Entered,
-                        (KeyCode::Backspace, _) => {
-                            buffer.pop();
-                        }
-                        (KeyCode::Char(c), _) => buffer.push(c),
-                        _ => {}
-                    }
-                }
-            };
-            match outcome {
-                Answered::Cancel => {
-                    teardown(&mut terminal)?;
-                    return Ok(RefineOutcome {
-                        goal: None,
-                        cost: total_cost,
-                    });
-                }
-                Answered::SkipRefine => {
-                    teardown(&mut terminal)?;
-                    return Ok(RefineOutcome {
-                        goal: Some(goal.to_string()),
-                        cost: total_cost,
-                    });
-                }
-                Answered::Entered => {
-                    answers.push((question.clone(), buffer.trim().to_string()));
-                }
-            }
-        }
-
-        // Pass 2: fold the answers into a final goal. Keep pass 1's rewrite if
-        // this pass fails.
-        terminal.draw(|f| ui::render_refining(f, "folding your answers into a final goal"))?;
-        let (cost2, result2) = run_refine_pass(
-            repo,
-            &config::refine_finalize_prompt(goal, &answers, &out_path.to_string_lossy()),
-            &out_path,
-            &tx,
-        )
-        .await;
-        total_cost += cost2;
-        if let Ok(result2) = result2 {
-            final_goal = result2.refined_goal;
-        }
-    }
-
-    // Confirm screen: the user has the last word on the goal.
-    let mut buffer = final_goal;
-    let confirmed = loop {
-        terminal.draw(|f| ui::render_goal_confirm(f, &buffer))?;
-        if let Event::Key(key) = crossterm::event::read()? {
-            match (key.code, key.modifiers) {
-                (KeyCode::Char('c'), KeyModifiers::CONTROL) => break None,
-                (KeyCode::Esc, _) => break Some(goal.to_string()),
-                (KeyCode::Enter, _) => {
-                    // A line ending in a backslash continues onto a new line;
-                    // otherwise Enter accepts the goal.
-                    if buffer.ends_with('\\') {
-                        buffer.pop();
-                        buffer.push('\n');
-                    } else if !buffer.trim().is_empty() {
-                        break Some(buffer.trim().to_string());
-                    }
-                }
-                (KeyCode::Backspace, _) => {
-                    buffer.pop();
-                }
-                (KeyCode::Char(c), _) => buffer.push(c),
-                _ => {}
-            }
-        }
-    };
-
-    teardown(&mut terminal)?;
-    Ok(RefineOutcome {
-        goal: confirmed,
-        cost: total_cost,
-    })
 }
 
 #[cfg(test)]

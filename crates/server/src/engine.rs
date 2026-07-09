@@ -10,7 +10,6 @@ use tokio::process::Command;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config;
-use crate::event::AppEvent;
 use shared::StageEvent;
 
 pub struct StageSpec<'a> {
@@ -118,7 +117,7 @@ fn parse_stage_line(line: &str) -> Vec<StageMessage> {
 /// Run a single `claude -p` invocation to completion, parsing its event stream.
 pub async fn run_stage(
     spec: &StageSpec<'_>,
-    tx: &UnboundedSender<AppEvent>,
+    tx: &UnboundedSender<StageEvent>,
 ) -> anyhow::Result<Outcome> {
     let mut cmd = Command::new("claude");
     cmd.arg("-p")
@@ -160,22 +159,22 @@ pub async fn run_stage(
         for message in parse_stage_line(&line) {
             match message {
                 StageMessage::Init { model } => {
-                    let _ = tx.send(AppEvent::Stage(StageEvent::StageLog {
+                    let _ = tx.send(StageEvent::StageLog {
                         tag: tag.to_string(),
                         line: format!("session init ({model})"),
-                    }));
+                    });
                 }
                 StageMessage::Assistant { preview } => {
-                    let _ = tx.send(AppEvent::Stage(StageEvent::StageAssistant {
+                    let _ = tx.send(StageEvent::StageAssistant {
                         tag: tag.to_string(),
                         text: preview,
-                    }));
+                    });
                 }
                 StageMessage::Tool { name } => {
-                    let _ = tx.send(AppEvent::Stage(StageEvent::StageTool {
+                    let _ = tx.send(StageEvent::StageTool {
                         tag: tag.to_string(),
                         name,
-                    }));
+                    });
                 }
                 StageMessage::Result {
                     cost: line_cost,

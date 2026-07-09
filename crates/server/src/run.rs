@@ -12,7 +12,6 @@ use tokio::task::JoinHandle;
 
 use shared::{App, StageEvent};
 
-use crate::event::AppEvent;
 use crate::{config, resolve_setting, run_pipeline, workspace, worktree};
 
 pub use shared::StartRunRequest;
@@ -146,7 +145,7 @@ fn spawn_pipeline(
     refine_cost: f64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let (pipeline_tx, mut rx) = mpsc::unbounded_channel::<AppEvent>();
+        let (pipeline_tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();
 
         let pipeline_fut = async move {
             if let Err(e) = run_pipeline(
@@ -160,24 +159,22 @@ fn spawn_pipeline(
             )
             .await
             {
-                let _ = pipeline_tx.send(AppEvent::Stage(StageEvent::Fatal {
+                let _ = pipeline_tx.send(StageEvent::Fatal {
                     reason: e.to_string(),
-                }));
+                });
             }
             // `pipeline_tx` drops here, closing the channel so the forwarder
             // below sees `None` and returns once the pipeline is done.
         };
 
         let forward_fut = async {
-            while let Some(ev) = rx.recv().await {
-                if let AppEvent::Stage(stage) = ev {
-                    let done = matches!(stage, StageEvent::Done | StageEvent::Fatal { .. });
-                    let mut guard = app.lock().await;
-                    guard.apply_stage(stage);
-                    let _ = tx.send(guard.clone());
-                    if done {
-                        completed.store(true, Ordering::SeqCst);
-                    }
+            while let Some(stage) = rx.recv().await {
+                let done = matches!(stage, StageEvent::Done | StageEvent::Fatal { .. });
+                let mut guard = app.lock().await;
+                guard.apply_stage(stage);
+                let _ = tx.send(guard.clone());
+                if done {
+                    completed.store(true, Ordering::SeqCst);
                 }
             }
         };

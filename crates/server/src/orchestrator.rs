@@ -13,7 +13,6 @@ use tokio::sync::Mutex;
 
 use crate::config;
 use crate::engine::{self, StageSpec};
-use crate::event::AppEvent;
 use crate::plan::{Epic, Plan};
 use crate::worktree::{self, MergeResult};
 use shared::StageEvent;
@@ -183,7 +182,7 @@ async fn run_epic(
     epic: &Epic,
     config: &RunConfig,
     spent: &Arc<Mutex<f64>>,
-    tx: &UnboundedSender<AppEvent>,
+    tx: &UnboundedSender<StageEvent>,
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
     for attempt in 0..2 {
         // A dependency-free epic branches from the configured base ref; a
@@ -210,24 +209,24 @@ async fn run_epic(
         {
             let mut total = spent.lock().await;
             *total += outcome.cost;
-            let _ = tx.send(AppEvent::Stage(StageEvent::Cost { total: *total }));
+            let _ = tx.send(StageEvent::Cost { total: *total });
         }
-        let _ = tx.send(AppEvent::Stage(StageEvent::EpicVerifying {
+        let _ = tx.send(StageEvent::EpicVerifying {
             id: epic.id.clone(),
-        }));
+        });
         if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
-            let _ = tx.send(AppEvent::Stage(StageEvent::EpicSucceeded {
+            let _ = tx.send(StageEvent::EpicSucceeded {
                 id: epic.id.clone(),
                 cost: outcome.cost,
-            }));
+            });
             return Ok(Some(wt));
         }
         let _ = worktree::remove(&config.repo, &wt).await;
         if attempt == 0 {
-            let _ = tx.send(AppEvent::Stage(StageEvent::StageLog {
+            let _ = tx.send(StageEvent::StageLog {
                 tag: epic.id.clone(),
                 line: "verify failed, retrying once".to_string(),
-            }));
+            });
         }
     }
     Ok(None)
@@ -240,7 +239,7 @@ async fn run_epic(
 pub async fn run(
     plan: &Plan,
     config: RunConfig,
-    tx: UnboundedSender<AppEvent>,
+    tx: UnboundedSender<StageEvent>,
 ) -> anyhow::Result<()> {
     let epics_by_id: HashMap<String, Epic> = plan
         .epics
@@ -272,10 +271,10 @@ pub async fn run(
                 let _ = handle.await;
             } else {
                 if over_budget {
-                    let _ = tx.send(AppEvent::Stage(StageEvent::StageLog {
+                    let _ = tx.send(StageEvent::StageLog {
                         tag: "orchestrator".to_string(),
                         line: "global budget reached, not starting new epics".to_string(),
-                    }));
+                    });
                 }
                 break;
             }
@@ -288,10 +287,10 @@ pub async fn run(
                 sched.mark_running(&id);
             }
             let epic = epics_by_id[&id].clone();
-            let _ = tx.send(AppEvent::Stage(StageEvent::EpicStarted {
+            let _ = tx.send(StageEvent::EpicStarted {
                 id: epic.id.clone(),
                 title: epic.title.clone(),
-            }));
+            });
             let scheduler = scheduler.clone();
             let config = config.clone();
             let spent = spent.clone();
@@ -312,9 +311,9 @@ pub async fn run(
                         };
                         match merged {
                             Ok(MergeResult::Merged) => {
-                                let _ = tx.send(AppEvent::Stage(StageEvent::EpicMerged {
+                                let _ = tx.send(StageEvent::EpicMerged {
                                     id: epic.id.clone(),
-                                }));
+                                });
                                 {
                                     let mut sched = scheduler.lock().await;
                                     sched.mark_succeeded(&epic.id);
@@ -323,18 +322,18 @@ pub async fn run(
                                 let _ = worktree::remove(&config.repo, &wt).await;
                             }
                             Ok(MergeResult::Conflict) => {
-                                let _ = tx.send(AppEvent::Stage(StageEvent::EpicConflict {
+                                let _ = tx.send(StageEvent::EpicConflict {
                                     id: epic.id.clone(),
-                                }));
+                                });
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
                                 // Keep the worktree and branch agentic/<id> for manual merge.
                             }
                             Err(e) => {
-                                let _ = tx.send(AppEvent::Stage(StageEvent::EpicFailed {
+                                let _ = tx.send(StageEvent::EpicFailed {
                                     id: epic.id.clone(),
                                     reason: e.to_string(),
-                                }));
+                                });
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
                                 // Keep the worktree and branch for diagnosis.
@@ -342,18 +341,18 @@ pub async fn run(
                         }
                     }
                     Ok(None) => {
-                        let _ = tx.send(AppEvent::Stage(StageEvent::EpicFailed {
+                        let _ = tx.send(StageEvent::EpicFailed {
                             id: epic.id.clone(),
                             reason: "verify failed after retry".to_string(),
-                        }));
+                        });
                         let mut sched = scheduler.lock().await;
                         sched.mark_failed(&epic.id);
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::Stage(StageEvent::EpicFailed {
+                        let _ = tx.send(StageEvent::EpicFailed {
                             id: epic.id.clone(),
                             reason: e.to_string(),
-                        }));
+                        });
                         let mut sched = scheduler.lock().await;
                         sched.mark_failed(&epic.id);
                     }
@@ -361,7 +360,7 @@ pub async fn run(
                 let sched = scheduler.lock().await;
                 for (eid, state) in sched.snapshot() {
                     if state == EpicState::Skipped {
-                        let _ = tx.send(AppEvent::Stage(StageEvent::EpicSkipped { id: eid }));
+                        let _ = tx.send(StageEvent::EpicSkipped { id: eid });
                     }
                 }
             }));
@@ -371,7 +370,7 @@ pub async fn run(
     for handle in handles {
         let _ = handle.await;
     }
-    let _ = tx.send(AppEvent::Stage(StageEvent::Done));
+    let _ = tx.send(StageEvent::Done);
     Ok(())
 }
 
