@@ -14,38 +14,56 @@ use axum::{
 use rust_embed::RustEmbed;
 use shared::{
     RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
-    RunSummary, SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse,
+    RepoDto, RunSummary, SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse,
     WorkspaceDto,
 };
 use tokio::sync::broadcast;
 
 use crate::refine;
 use crate::run::{self, StartError};
-use crate::workspace::{self, Workspace};
+use crate::workspace::{self, Repo, Workspace};
 
 #[derive(RustEmbed)]
 #[folder = "../web/dist"]
 struct Assets;
 
-impl From<&Workspace> for WorkspaceDto {
-    fn from(workspace: &Workspace) -> Self {
-        WorkspaceDto {
-            name: workspace.name.clone(),
-            path: workspace.path.to_string_lossy().to_string(),
-            base: workspace.base.clone(),
-            integration: workspace.integration.clone(),
+impl From<&Repo> for RepoDto {
+    fn from(repo: &Repo) -> Self {
+        RepoDto {
+            name: repo.name.clone(),
+            path: repo.path.to_string_lossy().to_string(),
+            base: repo.base.clone(),
+            integration: repo.integration.clone(),
         }
     }
 }
 
-/// Turn a wire-form `WorkspaceDto` back into a native `Workspace`, expanding
-/// a leading `~` the same way `--workspace <path>` does on the CLI.
-fn to_workspace(dto: &WorkspaceDto) -> Workspace {
-    Workspace {
+impl From<&Workspace> for WorkspaceDto {
+    fn from(workspace: &Workspace) -> Self {
+        WorkspaceDto {
+            name: workspace.name.clone(),
+            repos: workspace.repos.iter().map(RepoDto::from).collect(),
+        }
+    }
+}
+
+/// Turn a wire-form `RepoDto` back into a native `Repo`, expanding a leading
+/// `~` in its path the same way `--workspace <path>` does on the CLI.
+fn to_repo(dto: &RepoDto) -> Repo {
+    Repo {
         name: dto.name.clone(),
         path: workspace::expand_tilde(&dto.path),
         base: dto.base.clone(),
         integration: dto.integration.clone(),
+    }
+}
+
+/// Turn a wire-form `WorkspaceDto` back into a native `Workspace`, expanding a
+/// leading `~` in every repo path.
+fn to_workspace(dto: &WorkspaceDto) -> Workspace {
+    Workspace {
+        name: dto.name.clone(),
+        repos: dto.repos.iter().map(to_repo).collect(),
     }
 }
 
@@ -62,7 +80,7 @@ async fn scan_workspaces(Json(request): Json<ScanRequest>) -> Json<ScanResponse>
     let root = workspace::expand_tilde(&request.root);
     let repos = workspace::scan_for_repos(&root, workspace::DEFAULT_SCAN_DEPTH);
     Json(ScanResponse {
-        repos: repos.iter().map(WorkspaceDto::from).collect(),
+        repos: repos.iter().map(RepoDto::from).collect(),
     })
 }
 
@@ -145,8 +163,8 @@ async fn stream_run(mut socket: WebSocket, id: String) {
 async fn refine_questions(
     Json(request): Json<RefineQuestionsRequest>,
 ) -> Json<RefineQuestionsResponse> {
-    let repo = workspace::expand_tilde(&request.repo);
-    let (refined_goal, questions, cost) = refine::questions(&repo, &request.goal).await;
+    let root = workspace::expand_tilde(&request.root);
+    let (refined_goal, questions, cost) = refine::questions(&root, &request.goal).await;
     Json(RefineQuestionsResponse {
         refined_goal,
         questions,
@@ -160,8 +178,8 @@ async fn refine_questions(
 async fn refine_finalize(
     Json(request): Json<RefineFinalizeRequest>,
 ) -> Json<RefineFinalizeResponse> {
-    let repo = workspace::expand_tilde(&request.repo);
-    let (refined_goal, cost) = refine::finalize(&repo, &request.goal, &request.answers).await;
+    let root = workspace::expand_tilde(&request.root);
+    let (refined_goal, cost) = refine::finalize(&root, &request.goal, &request.answers).await;
     Json(RefineFinalizeResponse { refined_goal, cost })
 }
 
@@ -221,15 +239,19 @@ mod tests {
     fn dto_conversion_round_trips_a_workspace() {
         let original = Workspace {
             name: "greentic".to_string(),
-            path: PathBuf::from("/tmp/greentic"),
-            base: Some("develop".to_string()),
-            integration: Some("agentic-wip".to_string()),
+            repos: vec![Repo {
+                name: "greentic".to_string(),
+                path: PathBuf::from("/tmp/greentic"),
+                base: Some("develop".to_string()),
+                integration: Some("agentic-wip".to_string()),
+            }],
         };
         let dto = WorkspaceDto::from(&original);
         assert_eq!(dto.name, "greentic");
-        assert_eq!(dto.path, "/tmp/greentic");
-        assert_eq!(dto.base.as_deref(), Some("develop"));
-        assert_eq!(dto.integration.as_deref(), Some("agentic-wip"));
+        assert_eq!(dto.repos.len(), 1);
+        assert_eq!(dto.repos[0].path, "/tmp/greentic");
+        assert_eq!(dto.repos[0].base.as_deref(), Some("develop"));
+        assert_eq!(dto.repos[0].integration.as_deref(), Some("agentic-wip"));
 
         let back = to_workspace(&dto);
         assert_eq!(back, original);
@@ -271,15 +293,21 @@ mod tests {
         let workspaces = vec![
             WorkspaceDto {
                 name: "alpha".to_string(),
-                path: "/tmp/alpha".to_string(),
-                base: Some("main".to_string()),
-                integration: None,
+                repos: vec![RepoDto {
+                    name: "alpha".to_string(),
+                    path: "/tmp/alpha".to_string(),
+                    base: Some("main".to_string()),
+                    integration: None,
+                }],
             },
             WorkspaceDto {
                 name: "beta".to_string(),
-                path: "/tmp/beta".to_string(),
-                base: None,
-                integration: Some("agentic-wip".to_string()),
+                repos: vec![RepoDto {
+                    name: "beta".to_string(),
+                    path: "/tmp/beta".to_string(),
+                    base: None,
+                    integration: Some("agentic-wip".to_string()),
+                }],
             },
         ];
 
@@ -292,10 +320,10 @@ mod tests {
         let listed = list_workspaces().await;
         assert_eq!(listed.0.len(), 2, "list must reflect the saved entries");
         let alpha = listed.0.iter().find(|w| w.name == "alpha").unwrap();
-        assert_eq!(alpha.path, "/tmp/alpha");
-        assert_eq!(alpha.base.as_deref(), Some("main"));
+        assert_eq!(alpha.repos[0].path, "/tmp/alpha");
+        assert_eq!(alpha.repos[0].base.as_deref(), Some("main"));
         let beta = listed.0.iter().find(|w| w.name == "beta").unwrap();
-        assert_eq!(beta.integration.as_deref(), Some("agentic-wip"));
+        assert_eq!(beta.repos[0].integration.as_deref(), Some("agentic-wip"));
 
         let _ = std::fs::remove_dir_all(&home);
     }
@@ -348,7 +376,7 @@ mod tests {
         let original_path = prepend_path(&bin_dir);
 
         let response = refine_questions(Json(RefineQuestionsRequest {
-            repo: repo.to_string_lossy().to_string(),
+            root: repo.to_string_lossy().to_string(),
             goal: "add a health check".to_string(),
         }))
         .await;
@@ -387,7 +415,7 @@ mod tests {
         let original_path = prepend_path(&bin_dir);
 
         let response = refine_finalize(Json(RefineFinalizeRequest {
-            repo: repo.to_string_lossy().to_string(),
+            root: repo.to_string_lossy().to_string(),
             goal: "add a health check".to_string(),
             answers: vec![("Which port?".to_string(), "8080".to_string())],
         }))
@@ -421,7 +449,7 @@ mod tests {
         let original_path = prepend_path(&bin_dir);
 
         let response = refine_questions(Json(RefineQuestionsRequest {
-            repo: repo.to_string_lossy().to_string(),
+            root: repo.to_string_lossy().to_string(),
             goal: "add a health check".to_string(),
         }))
         .await;

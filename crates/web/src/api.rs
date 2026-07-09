@@ -84,9 +84,9 @@ pub async fn start_run(request: StartRunRequest) -> Result<StartRunResponse, Str
 
 /// `POST /api/refine/questions` -> the pass-1 refined goal, at most a
 /// handful of clarifying questions, and the cost incurred.
-pub async fn refine_questions(repo: &str, goal: &str) -> Result<RefineQuestionsResponse, String> {
+pub async fn refine_questions(root: &str, goal: &str) -> Result<RefineQuestionsResponse, String> {
     let body = RefineQuestionsRequest {
-        repo: repo.to_string(),
+        root: root.to_string(),
         goal: goal.to_string(),
     };
     let response = Request::post("/api/refine/questions")
@@ -125,12 +125,12 @@ pub async fn list_runs() -> Result<Vec<RunSummary>, String> {
 /// `POST /api/refine/finalize` -> the final refined goal folding in the
 /// user's answers, and the cost incurred by this pass.
 pub async fn refine_finalize(
-    repo: &str,
+    root: &str,
     goal: &str,
     answers: Vec<(String, String)>,
 ) -> Result<RefineFinalizeResponse, String> {
     let body = RefineFinalizeRequest {
-        repo: repo.to_string(),
+        root: root.to_string(),
         goal: goal.to_string(),
         answers,
     };

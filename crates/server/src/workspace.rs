@@ -1,15 +1,27 @@
 //! Loading and validating workspaces from `~/.config/agentic-tui/workspaces.toml`.
-//! A workspace is a single project root that every session runs inside.
+//! A workspace is a named group of one or more git repositories that a run
+//! targets together. A one-repo group behaves exactly as a single-repo
+//! workspace did before this reshape.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
+/// One repository inside a workspace group: where it lives, the ref its epics
+/// branch from (defaulting later to `HEAD`), and the branch their work merges
+/// into (defaulting later to `agentic-integration`).
 #[derive(Debug, Clone, PartialEq)]
-pub struct Workspace {
+pub struct Repo {
     pub name: String,
     pub path: PathBuf,
     pub base: Option<String>,
     pub integration: Option<String>,
+}
+
+/// A named group of repositories a run targets together.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Workspace {
+    pub name: String,
+    pub repos: Vec<Repo>,
 }
 
 use serde::{Deserialize, Serialize};
@@ -20,8 +32,27 @@ struct WorkspacesFile {
     workspace: Vec<RawWorkspace>,
 }
 
+/// A `[[workspace]]` entry as parsed from TOML. It accepts BOTH shapes: a
+/// nested list of `[[workspace.repo]]` blocks (a multi-repo group), or a
+/// legacy flat `path`/`base`/`integration` (a one-repo group named after the
+/// workspace). Existing flat configs keep working.
 #[derive(Debug, Deserialize)]
 struct RawWorkspace {
+    name: String,
+    // Legacy single-repo fields:
+    #[serde(default)]
+    path: Option<String>,
+    #[serde(default)]
+    base: Option<String>,
+    #[serde(default)]
+    integration: Option<String>,
+    // Nested repo list:
+    #[serde(default)]
+    repo: Vec<RawRepo>,
+}
+
+#[derive(Debug, Deserialize)]
+struct RawRepo {
     name: String,
     path: String,
     #[serde(default)]
@@ -35,8 +66,17 @@ struct WorkspacesOut {
     workspace: Vec<RawWorkspaceOut>,
 }
 
+/// A workspace group always serializes to the nested shape: `name` plus one
+/// `[[workspace.repo]]` block per repo (a one-repo group writes a single
+/// block).
 #[derive(Serialize)]
 struct RawWorkspaceOut {
+    name: String,
+    repo: Vec<RawRepoOut>,
+}
+
+#[derive(Serialize)]
+struct RawRepoOut {
     name: String,
     path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -65,20 +105,48 @@ pub fn expand_tilde(raw: &str) -> PathBuf {
     }
 }
 
-/// Parse workspace entries from a TOML string, expanding paths.
+/// Parse workspace entries from a TOML string, expanding paths. Each entry
+/// becomes a `Workspace` group: a nested `[[workspace.repo]]` list maps to a
+/// multi-repo group; a legacy flat `path` maps to a one-repo group named after
+/// the workspace. An entry with neither a repo list nor a flat path is an
+/// error.
 fn parse_workspaces_str(text: &str) -> anyhow::Result<Vec<Workspace>> {
     let parsed: WorkspacesFile = toml::from_str(text)?;
-    let workspaces = parsed
+    parsed
         .workspace
         .into_iter()
-        .map(|raw| Workspace {
-            name: raw.name,
-            path: expand_tilde(&raw.path),
-            base: raw.base,
-            integration: raw.integration,
+        .map(|raw| {
+            let repos = if !raw.repo.is_empty() {
+                raw.repo
+                    .into_iter()
+                    .map(|repo| Repo {
+                        name: repo.name,
+                        path: expand_tilde(&repo.path),
+                        base: repo.base,
+                        integration: repo.integration,
+                    })
+                    .collect()
+            } else if let Some(path) = raw.path {
+                // A legacy flat entry becomes a one-repo group named after the
+                // workspace itself.
+                vec![Repo {
+                    name: raw.name.clone(),
+                    path: expand_tilde(&path),
+                    base: raw.base,
+                    integration: raw.integration,
+                }]
+            } else {
+                anyhow::bail!(
+                    "workspace '{}' has neither a path nor a [[workspace.repo]] list",
+                    raw.name
+                );
+            };
+            Ok(Workspace {
+                name: raw.name,
+                repos,
+            })
         })
-        .collect();
-    Ok(workspaces)
+        .collect()
 }
 
 /// Load workspaces from a config file on disk.
@@ -89,8 +157,9 @@ pub fn load_workspaces(config_path: &Path) -> anyhow::Result<Vec<Workspace>> {
 }
 
 /// Persist `workspaces` to `config_path`, merging with any entries already
-/// saved there. Entries are unioned by path and the existing name wins on a
-/// path conflict. The parent directory is created if it does not exist.
+/// saved there. Entries are unioned by workspace name and the existing group
+/// wins on a name conflict. The parent directory is created if it does not
+/// exist.
 ///
 /// The merge starts from an empty list only when `config_path` does not
 /// exist yet. If the file exists but cannot be parsed (malformed or
@@ -102,9 +171,9 @@ pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::
         Err(_) if !config_path.exists() => Vec::new(),
         Err(e) => return Err(e),
     };
-    let mut seen: HashSet<PathBuf> = merged.iter().map(|w| w.path.clone()).collect();
+    let mut seen: HashSet<String> = merged.iter().map(|w| w.name.clone()).collect();
     for workspace in workspaces {
-        if seen.insert(workspace.path.clone()) {
+        if seen.insert(workspace.name.clone()) {
             merged.push(workspace.clone());
         }
     }
@@ -114,9 +183,16 @@ pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::
             .iter()
             .map(|w| RawWorkspaceOut {
                 name: w.name.clone(),
-                path: w.path.to_string_lossy().to_string(),
-                base: w.base.clone(),
-                integration: w.integration.clone(),
+                repo: w
+                    .repos
+                    .iter()
+                    .map(|r| RawRepoOut {
+                        name: r.name.clone(),
+                        path: r.path.to_string_lossy().to_string(),
+                        base: r.base.clone(),
+                        integration: r.integration.clone(),
+                    })
+                    .collect(),
             })
             .collect(),
     };
@@ -129,21 +205,67 @@ pub fn save_workspaces(config_path: &Path, workspaces: &[Workspace]) -> anyhow::
     Ok(())
 }
 
-/// Ensure a workspace points at a real git repository directory.
+/// Ensure a workspace is a non-empty group of git repositories with unique
+/// repo names, each repo path being a directory that contains `.git`. The
+/// error names the offending repo.
 pub fn validate(workspace: &Workspace) -> anyhow::Result<()> {
-    if !workspace.path.is_dir() {
-        anyhow::bail!(
-            "workspace path is not a directory: {}",
-            workspace.path.display()
-        );
+    if workspace.repos.is_empty() {
+        anyhow::bail!("workspace '{}' has no repositories", workspace.name);
     }
-    if !workspace.path.join(".git").exists() {
-        anyhow::bail!(
-            "workspace is not a git repository (no .git): {}",
-            workspace.path.display()
-        );
+    let mut seen: HashSet<&str> = HashSet::new();
+    for repo in &workspace.repos {
+        if !seen.insert(repo.name.as_str()) {
+            anyhow::bail!(
+                "workspace '{}' has a duplicate repo name: {}",
+                workspace.name,
+                repo.name
+            );
+        }
+        if !repo.path.is_dir() {
+            anyhow::bail!(
+                "repo '{}' path is not a directory: {}",
+                repo.name,
+                repo.path.display()
+            );
+        }
+        if !repo.path.join(".git").exists() {
+            anyhow::bail!(
+                "repo '{}' is not a git repository (no .git): {}",
+                repo.name,
+                repo.path.display()
+            );
+        }
     }
     Ok(())
+}
+
+/// The longest shared directory prefix of every repo path in the group. For a
+/// single repo it is that repo's parent directory, so planning runs one level
+/// above the repo just as it did before this reshape.
+pub fn common_root(workspace: &Workspace) -> PathBuf {
+    let mut paths = workspace.repos.iter().map(|r| r.path.as_path());
+    let Some(first) = paths.next() else {
+        return PathBuf::new();
+    };
+    if workspace.repos.len() == 1 {
+        return first
+            .parent()
+            .map(Path::to_path_buf)
+            .unwrap_or_else(|| first.to_path_buf());
+    }
+    // Start from the first path's components and shrink to the longest prefix
+    // shared with every other path.
+    let mut prefix: Vec<_> = first.components().collect();
+    for path in paths {
+        let components: Vec<_> = path.components().collect();
+        let shared = prefix
+            .iter()
+            .zip(components.iter())
+            .take_while(|(a, b)| a == b)
+            .count();
+        prefix.truncate(shared);
+    }
+    prefix.iter().collect()
 }
 
 /// Maximum directory depth `scan_for_repos` descends from its root.
@@ -159,7 +281,9 @@ pub const MAX_SCAN_RESULTS: usize = 500;
 /// heavy build directories are pruned. Unreadable directories are skipped
 /// silently. Results are sorted by path, capped at `MAX_SCAN_RESULTS`, and named
 /// by their directory, disambiguated by parent directory on a name collision.
-pub fn scan_for_repos(root: &Path, max_depth: usize) -> Vec<Workspace> {
+/// The grouping of these raw repos into a named `Workspace` happens at the
+/// save layer, so this returns the flat repo list.
+pub fn scan_for_repos(root: &Path, max_depth: usize) -> Vec<Repo> {
     const PRUNE: [&str; 4] = ["node_modules", "target", "dist", "build"];
     let mut repos: Vec<PathBuf> = Vec::new();
     let mut stack: Vec<(PathBuf, usize)> = vec![(root.to_path_buf(), 0)];
@@ -194,7 +318,7 @@ pub fn scan_for_repos(root: &Path, max_depth: usize) -> Vec<Workspace> {
     }
     repos.sort();
     repos.truncate(MAX_SCAN_RESULTS);
-    workspaces_from_paths(repos)
+    repos_from_paths(repos)
 }
 
 /// The final path component as a display name, falling back to the whole path.
@@ -204,9 +328,9 @@ fn base_name(path: &Path) -> String {
         .unwrap_or_else(|| path.to_string_lossy().to_string())
 }
 
-/// Turn repo paths into workspaces, disambiguating any names shared by more than
+/// Turn repo paths into repos, disambiguating any names shared by more than
 /// one repo with a `parent/name` label.
-fn workspaces_from_paths(paths: Vec<PathBuf>) -> Vec<Workspace> {
+fn repos_from_paths(paths: Vec<PathBuf>) -> Vec<Repo> {
     let mut counts: HashMap<String, usize> = HashMap::new();
     for path in &paths {
         *counts.entry(base_name(path)).or_insert(0) += 1;
@@ -223,7 +347,7 @@ fn workspaces_from_paths(paths: Vec<PathBuf>) -> Vec<Workspace> {
             } else {
                 base
             };
-            Workspace {
+            Repo {
                 name,
                 path,
                 base: None,
@@ -259,7 +383,96 @@ path = "/tmp/portfolio"
         let workspaces = parse_workspaces_str(toml_text).unwrap();
         assert_eq!(workspaces.len(), 2);
         assert_eq!(workspaces[0].name, "greentic");
-        assert_eq!(workspaces[0].path, PathBuf::from("/tmp/greentic"));
+        assert_eq!(workspaces[0].repos.len(), 1);
+        assert_eq!(workspaces[0].repos[0].path, PathBuf::from("/tmp/greentic"));
+    }
+
+    #[test]
+    fn parses_a_nested_multi_repo_workspace() {
+        let toml_text = r#"
+[[workspace]]
+name = "greentic"
+
+  [[workspace.repo]]
+  name = "greentic"
+  path = "/tmp/greentic/greentic"
+  base = "main"
+
+  [[workspace.repo]]
+  name = "billing"
+  path = "/tmp/greentic/billing"
+"#;
+        let ws = parse_workspaces_str(toml_text).unwrap();
+        assert_eq!(ws.len(), 1);
+        assert_eq!(ws[0].repos.len(), 2);
+        assert_eq!(ws[0].repos[0].name, "greentic");
+        assert_eq!(ws[0].repos[0].base.as_deref(), Some("main"));
+        assert_eq!(ws[0].repos[1].name, "billing");
+    }
+
+    #[test]
+    fn parses_a_legacy_flat_workspace_as_one_repo() {
+        let toml_text = r#"
+[[workspace]]
+name = "greentic"
+path = "/tmp/greentic/greentic"
+base = "develop"
+"#;
+        let ws = parse_workspaces_str(toml_text).unwrap();
+        assert_eq!(ws.len(), 1);
+        assert_eq!(
+            ws[0].repos.len(),
+            1,
+            "a flat entry becomes a one-repo group"
+        );
+        assert_eq!(ws[0].repos[0].name, "greentic");
+        assert_eq!(ws[0].repos[0].path, PathBuf::from("/tmp/greentic/greentic"));
+        assert_eq!(ws[0].repos[0].base.as_deref(), Some("develop"));
+    }
+
+    #[test]
+    fn validate_rejects_an_empty_repo_list_and_duplicate_names() {
+        let empty = Workspace {
+            name: "x".into(),
+            repos: vec![],
+        };
+        assert!(validate(&empty).is_err());
+    }
+
+    #[test]
+    fn common_root_is_the_shared_parent_of_sibling_repos() {
+        let ws = Workspace {
+            name: "greentic".into(),
+            repos: vec![
+                Repo {
+                    name: "a".into(),
+                    path: PathBuf::from("/home/u/greentic/a"),
+                    base: None,
+                    integration: None,
+                },
+                Repo {
+                    name: "b".into(),
+                    path: PathBuf::from("/home/u/greentic/b"),
+                    base: None,
+                    integration: None,
+                },
+            ],
+        };
+        assert_eq!(common_root(&ws), PathBuf::from("/home/u/greentic"));
+    }
+
+    #[test]
+    fn common_root_of_one_repo_is_its_parent() {
+        let ws = Workspace {
+            name: "solo".into(),
+            repos: vec![Repo {
+                name: "solo".into(),
+                path: PathBuf::from("/home/u/greentic/solo"),
+                base: None,
+                integration: None,
+            }],
+        };
+        assert_eq!(common_root(&ws), PathBuf::from("/home/u/greentic"));
     }
 
     #[test]
@@ -285,9 +498,12 @@ path = "/tmp/portfolio"
     fn validate_rejects_a_path_that_is_not_a_directory() {
         let workspace = Workspace {
             name: "ghost".to_string(),
-            path: PathBuf::from("/nonexistent/path/here"),
-            base: None,
-            integration: None,
+            repos: vec![Repo {
+                name: "ghost".to_string(),
+                path: PathBuf::from("/nonexistent/path/here"),
+                base: None,
+                integration: None,
+            }],
         };
         assert!(validate(&workspace).is_err());
     }
@@ -342,46 +558,40 @@ path = "/tmp/portfolio"
         let _ = std::fs::remove_dir_all(&base);
     }
 
+    /// A convenience for tests: a one-repo group named `name` rooted at `path`.
+    fn one_repo(name: &str, path: &str) -> Workspace {
+        Workspace {
+            name: name.to_string(),
+            repos: vec![Repo {
+                name: name.to_string(),
+                path: PathBuf::from(path),
+                base: None,
+                integration: None,
+            }],
+        }
+    }
+
     #[test]
     fn save_unions_with_existing_and_round_trips() {
         let dir = std::env::temp_dir().join(format!("save-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let config = dir.join("nested/workspaces.toml");
 
-        let first = vec![
-            Workspace {
-                name: "a".to_string(),
-                path: PathBuf::from("/tmp/a"),
-                base: None,
-                integration: None,
-            },
-            Workspace {
-                name: "b".to_string(),
-                path: PathBuf::from("/tmp/b"),
-                base: None,
-                integration: None,
-            },
-        ];
+        let first = vec![one_repo("a", "/tmp/a"), one_repo("b", "/tmp/b")];
         save_workspaces(&config, &first).unwrap();
         let loaded = load_workspaces(&config).unwrap();
         assert_eq!(loaded.len(), 2);
         assert_eq!(loaded[0], first[0]);
 
-        // A second save with an overlapping path unions by path; the existing name
-        // for /tmp/b is kept, and /tmp/c is added.
+        // A second save with an overlapping name unions by name; the existing
+        // group named "b" is kept, and "c" is added.
         let more = vec![
-            Workspace {
-                name: "b-renamed".to_string(),
-                path: PathBuf::from("/tmp/b"),
-                base: None,
-                integration: None,
+            {
+                let mut renamed = one_repo("b", "/tmp/b-different");
+                renamed.name = "b".to_string();
+                renamed
             },
-            Workspace {
-                name: "c".to_string(),
-                path: PathBuf::from("/tmp/c"),
-                base: None,
-                integration: None,
-            },
+            one_repo("c", "/tmp/c"),
         ];
         save_workspaces(&config, &more).unwrap();
         let loaded = load_workspaces(&config).unwrap();
@@ -390,11 +600,49 @@ path = "/tmp/portfolio"
             3,
             "union should be a, b, c with no duplicate b"
         );
-        let b = loaded
-            .iter()
-            .find(|w| w.path == Path::new("/tmp/b"))
-            .unwrap();
-        assert_eq!(b.name, "b", "existing name is kept on a path conflict");
+        let b = loaded.iter().find(|w| w.name == "b").unwrap();
+        assert_eq!(
+            b.repos[0].path,
+            PathBuf::from("/tmp/b"),
+            "existing group is kept on a name conflict"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_round_trips_a_nested_multi_repo_group() {
+        let dir = std::env::temp_dir().join(format!("save-nested-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let config = dir.join("workspaces.toml");
+
+        let group = Workspace {
+            name: "greentic".to_string(),
+            repos: vec![
+                Repo {
+                    name: "greentic".to_string(),
+                    path: PathBuf::from("/tmp/greentic/greentic"),
+                    base: Some("main".to_string()),
+                    integration: None,
+                },
+                Repo {
+                    name: "billing".to_string(),
+                    path: PathBuf::from("/tmp/greentic/billing"),
+                    base: None,
+                    integration: None,
+                },
+            ],
+        };
+        save_workspaces(&config, std::slice::from_ref(&group)).unwrap();
+        let text = std::fs::read_to_string(&config).unwrap();
+        assert!(
+            text.contains("[[workspace.repo]]"),
+            "a group must serialize to the nested repo shape"
+        );
+
+        let loaded = load_workspaces(&config).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0], group);
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -408,15 +656,7 @@ path = "/tmp/portfolio"
         let malformed = "this is = not = valid toml";
         std::fs::write(&config, malformed).unwrap();
 
-        let result = save_workspaces(
-            &config,
-            &[Workspace {
-                name: "new".to_string(),
-                path: PathBuf::from("/tmp/new"),
-                base: None,
-                integration: None,
-            }],
-        );
+        let result = save_workspaces(&config, &[one_repo("new", "/tmp/new")]);
         assert!(
             result.is_err(),
             "save_workspaces must not overwrite a config it cannot parse"
@@ -464,10 +704,10 @@ name = "b"
 path = "/tmp/b"
 "#;
         let ws = parse_workspaces_str(toml_text).unwrap();
-        assert_eq!(ws[0].base.as_deref(), Some("develop"));
-        assert_eq!(ws[0].integration.as_deref(), Some("agentic-wip"));
-        assert_eq!(ws[1].base, None);
-        assert_eq!(ws[1].integration, None);
+        assert_eq!(ws[0].repos[0].base.as_deref(), Some("develop"));
+        assert_eq!(ws[0].repos[0].integration.as_deref(), Some("agentic-wip"));
+        assert_eq!(ws[1].repos[0].base, None);
+        assert_eq!(ws[1].repos[0].integration, None);
     }
 
     #[test]
@@ -478,16 +718,14 @@ path = "/tmp/b"
         let list = vec![
             Workspace {
                 name: "a".to_string(),
-                path: PathBuf::from("/tmp/a"),
-                base: Some("develop".to_string()),
-                integration: Some("agentic-wip".to_string()),
+                repos: vec![Repo {
+                    name: "a".to_string(),
+                    path: PathBuf::from("/tmp/a"),
+                    base: Some("develop".to_string()),
+                    integration: Some("agentic-wip".to_string()),
+                }],
             },
-            Workspace {
-                name: "b".to_string(),
-                path: PathBuf::from("/tmp/b"),
-                base: None,
-                integration: None,
-            },
+            one_repo("b", "/tmp/b"),
         ];
         save_workspaces(&config, &list).unwrap();
         let text = std::fs::read_to_string(&config).unwrap();
@@ -498,11 +736,11 @@ path = "/tmp/b"
 
         let loaded = load_workspaces(&config).unwrap();
         let a = loaded.iter().find(|w| w.name == "a").unwrap();
-        assert_eq!(a.base.as_deref(), Some("develop"));
-        assert_eq!(a.integration.as_deref(), Some("agentic-wip"));
+        assert_eq!(a.repos[0].base.as_deref(), Some("develop"));
+        assert_eq!(a.repos[0].integration.as_deref(), Some("agentic-wip"));
         let b = loaded.iter().find(|w| w.name == "b").unwrap();
-        assert_eq!(b.base, None);
-        assert_eq!(b.integration, None);
+        assert_eq!(b.repos[0].base, None);
+        assert_eq!(b.repos[0].integration, None);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

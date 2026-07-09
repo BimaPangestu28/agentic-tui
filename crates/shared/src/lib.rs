@@ -263,14 +263,24 @@ impl App {
     }
 }
 
-/// Wire form of a workspace entry, used at the HTTP API boundary so the
-/// web UI does not need to depend on the server's native `Workspace` type.
+/// Wire form of a single repository inside a workspace group, used at the
+/// HTTP API boundary so the web UI does not need to depend on the server's
+/// native `Repo` type.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct WorkspaceDto {
+pub struct RepoDto {
     pub name: String,
     pub path: String,
     pub base: Option<String>,
     pub integration: Option<String>,
+}
+
+/// Wire form of a workspace group: a named set of repositories a run targets
+/// together, used at the HTTP API boundary so the web UI does not need to
+/// depend on the server's native `Workspace` type.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct WorkspaceDto {
+    pub name: String,
+    pub repos: Vec<RepoDto>,
 }
 
 /// Body of `POST /api/workspaces/scan`: the directory to scan for repos.
@@ -282,7 +292,7 @@ pub struct ScanRequest {
 /// Response of `POST /api/workspaces/scan`: the repos found under `root`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ScanResponse {
-    pub repos: Vec<WorkspaceDto>,
+    pub repos: Vec<RepoDto>,
 }
 
 /// Body of `POST /api/workspaces`: the full workspace list to persist.
@@ -296,8 +306,6 @@ pub struct SaveRequest {
 pub struct StartRunRequest {
     pub workspace: WorkspaceDto,
     pub goal: String,
-    pub base: Option<String>,
-    pub into: Option<String>,
     pub verify: Option<String>,
     pub refine_cost: f64,
 }
@@ -314,7 +322,7 @@ pub struct StartRunResponse {
 /// user's original goal.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefineQuestionsRequest {
-    pub repo: String,
+    pub root: String,
     pub goal: String,
 }
 
@@ -332,7 +340,7 @@ pub struct RefineQuestionsResponse {
 /// question/answer pairs collected from the user.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RefineFinalizeRequest {
-    pub repo: String,
+    pub root: String,
     pub goal: String,
     pub answers: Vec<(String, String)>,
 }
@@ -350,7 +358,6 @@ pub struct RefineFinalizeResponse {
 pub struct RunSummary {
     pub id: String,
     pub workspace: String,
-    pub path: String,
     pub goal: String,
     pub phase: Phase,
     pub total_cost: f64,
@@ -477,17 +484,28 @@ mod tests {
     }
 
     #[test]
-    fn workspace_dto_round_trips_through_json() {
+    fn workspace_dto_round_trips_with_repos() {
         let dto = WorkspaceDto {
             name: "greentic".to_string(),
-            path: "/tmp/greentic".to_string(),
-            base: Some("develop".to_string()),
-            integration: None,
+            repos: vec![
+                RepoDto {
+                    name: "greentic".to_string(),
+                    path: "/tmp/greentic".to_string(),
+                    base: Some("main".to_string()),
+                    integration: None,
+                },
+                RepoDto {
+                    name: "billing".to_string(),
+                    path: "/tmp/billing".to_string(),
+                    base: None,
+                    integration: None,
+                },
+            ],
         };
-        let json = serde_json::to_string(&dto).expect("WorkspaceDto must serialize");
-        let back: WorkspaceDto =
-            serde_json::from_str(&json).expect("WorkspaceDto must deserialize");
+        let json = serde_json::to_string(&dto).unwrap();
+        let back: WorkspaceDto = serde_json::from_str(&json).unwrap();
         assert_eq!(dto, back);
+        assert_eq!(back.repos.len(), 2);
     }
 
     #[test]
@@ -495,13 +513,14 @@ mod tests {
         let request = StartRunRequest {
             workspace: WorkspaceDto {
                 name: "greentic".to_string(),
-                path: "/tmp/greentic".to_string(),
-                base: None,
-                integration: None,
+                repos: vec![RepoDto {
+                    name: "greentic".to_string(),
+                    path: "/tmp/greentic".to_string(),
+                    base: Some("develop".to_string()),
+                    integration: None,
+                }],
             },
             goal: "add a health check".to_string(),
-            base: Some("develop".to_string()),
-            into: None,
             verify: Some("make verify".to_string()),
             refine_cost: 0.05,
         };
@@ -509,9 +528,9 @@ mod tests {
         let back: StartRunRequest =
             serde_json::from_str(&json).expect("StartRunRequest must deserialize");
         assert_eq!(back.workspace.name, "greentic");
+        assert_eq!(back.workspace.repos.len(), 1);
+        assert_eq!(back.workspace.repos[0].base.as_deref(), Some("develop"));
         assert_eq!(back.goal, "add a health check");
-        assert_eq!(back.base.as_deref(), Some("develop"));
-        assert_eq!(back.into, None);
         assert_eq!(back.verify.as_deref(), Some("make verify"));
         assert_eq!(back.refine_cost, 0.05);
     }
@@ -530,13 +549,13 @@ mod tests {
     #[test]
     fn refine_questions_request_and_response_round_trip_through_json() {
         let request = RefineQuestionsRequest {
-            repo: "/tmp/greentic".to_string(),
+            root: "/tmp/greentic".to_string(),
             goal: "add a health check".to_string(),
         };
         let json = serde_json::to_string(&request).expect("RefineQuestionsRequest must serialize");
         let back: RefineQuestionsRequest =
             serde_json::from_str(&json).expect("RefineQuestionsRequest must deserialize");
-        assert_eq!(back.repo, "/tmp/greentic");
+        assert_eq!(back.root, "/tmp/greentic");
         assert_eq!(back.goal, "add a health check");
 
         let response = RefineQuestionsResponse {
@@ -556,14 +575,14 @@ mod tests {
     #[test]
     fn refine_finalize_request_and_response_round_trip_through_json() {
         let request = RefineFinalizeRequest {
-            repo: "/tmp/greentic".to_string(),
+            root: "/tmp/greentic".to_string(),
             goal: "add a health check".to_string(),
             answers: vec![("Which port?".to_string(), "8080".to_string())],
         };
         let json = serde_json::to_string(&request).expect("RefineFinalizeRequest must serialize");
         let back: RefineFinalizeRequest =
             serde_json::from_str(&json).expect("RefineFinalizeRequest must deserialize");
-        assert_eq!(back.repo, "/tmp/greentic");
+        assert_eq!(back.root, "/tmp/greentic");
         assert_eq!(back.answers, request.answers);
 
         let response = RefineFinalizeResponse {
@@ -580,7 +599,7 @@ mod tests {
     #[test]
     fn scan_response_round_trips_through_json() {
         let response = ScanResponse {
-            repos: vec![WorkspaceDto {
+            repos: vec![RepoDto {
                 name: "repoA".to_string(),
                 path: "/tmp/repoA".to_string(),
                 base: None,
@@ -598,7 +617,6 @@ mod tests {
         let summary = RunSummary {
             id: "1".to_string(),
             workspace: "greentic".to_string(),
-            path: "/tmp/greentic".to_string(),
             goal: "Add a health check".to_string(),
             phase: Phase::Implementing,
             total_cost: 0.42,

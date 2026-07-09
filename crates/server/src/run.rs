@@ -13,7 +13,8 @@ use tokio::task::JoinHandle;
 
 use shared::{App, StageEvent};
 
-use crate::{config, orchestrator, resolve_setting, run_pipeline, workspace, worktree};
+use crate::workspace::{Repo, Workspace};
+use crate::{config, orchestrator, run_pipeline, workspace, worktree};
 
 pub use shared::StartRunRequest;
 
@@ -51,6 +52,7 @@ struct RunHandle {
     tx: broadcast::Sender<App>,
     task: Option<JoinHandle<()>>,
     repo_paths: Vec<PathBuf>,
+    repo_names: Vec<String>,
     completed: Arc<AtomicBool>,
 }
 
@@ -66,36 +68,83 @@ static NEXT_ID: AtomicU64 = AtomicU64::new(1);
 /// workspace already has a run active (not yet completed) in the registry.
 pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let workspace_name = req.workspace.name.clone();
-    let repo = workspace::expand_tilde(&req.workspace.path);
-    let repo = repo.canonicalize().unwrap_or(repo);
-
-    let base_ref = resolve_setting(req.base.as_deref(), req.workspace.base.as_deref(), "HEAD");
-    let integration = resolve_setting(
-        req.into.as_deref(),
-        req.workspace.integration.as_deref(),
-        "agentic-integration",
-    );
     let verify_cmd = req
         .verify
         .clone()
         .unwrap_or_else(|| config::DEFAULT_VERIFY_CMD.to_string());
 
-    worktree::verify_ref(&repo, &base_ref)
-        .await
-        .map_err(|e| StartError::Invalid(e.to_string()))?;
-    if integration.trim().is_empty() {
+    // Resolve every repo up front (expanding `~` and canonicalizing its path),
+    // exactly as the single-repo path did before this reshape.
+    let workspace = Workspace {
+        name: workspace_name.clone(),
+        repos: req
+            .workspace
+            .repos
+            .iter()
+            .map(|repo| {
+                let path = workspace::expand_tilde(&repo.path);
+                let path = path.canonicalize().unwrap_or(path);
+                Repo {
+                    name: repo.name.clone(),
+                    path,
+                    base: repo.base.clone(),
+                    integration: repo.integration.clone(),
+                }
+            })
+            .collect(),
+    };
+    if workspace.repos.is_empty() {
         return Err(StartError::Invalid(
-            "into requires a branch name".to_string(),
+            "a run needs at least one repository".to_string(),
         ));
     }
-    let current_branch = worktree::current_branch(&repo)
-        .await
-        .map_err(|e| StartError::Invalid(e.to_string()))?;
-    if current_branch.as_deref() == Some(integration.as_str()) {
-        return Err(StartError::Invalid(format!(
-            "cannot merge into '{integration}': it is checked out in the workspace. Check out a different branch first, or choose another integration target."
-        )));
+
+    // Fail-fast gates, run PER repo before touching the registry so an invalid
+    // request never contends with a real run. Each error names the offending
+    // repo. The resolved `RepoRun` map is keyed by repo name, as the plan's
+    // epics tag their repo by name.
+    let mut repos: HashMap<String, orchestrator::RepoRun> = HashMap::new();
+    for repo in &workspace.repos {
+        let base_ref = repo.base.clone().unwrap_or_else(|| "HEAD".to_string());
+        let integration = repo
+            .integration
+            .clone()
+            .unwrap_or_else(|| "agentic-integration".to_string());
+
+        worktree::verify_ref(&repo.path, &base_ref)
+            .await
+            .map_err(|e| StartError::Invalid(format!("repo '{}': {e}", repo.name)))?;
+        if integration.trim().is_empty() {
+            return Err(StartError::Invalid(format!(
+                "repo '{}': the integration branch requires a name",
+                repo.name
+            )));
+        }
+        let current_branch = worktree::current_branch(&repo.path)
+            .await
+            .map_err(|e| StartError::Invalid(format!("repo '{}': {e}", repo.name)))?;
+        if current_branch.as_deref() == Some(integration.as_str()) {
+            return Err(StartError::Invalid(format!(
+                "repo '{}': cannot merge into '{integration}': it is checked out in the workspace. Check out a different branch first, or choose another integration target.",
+                repo.name
+            )));
+        }
+
+        repos.insert(
+            repo.name.clone(),
+            orchestrator::RepoRun {
+                path: repo.path.clone(),
+                base_ref,
+                integration_branch: integration,
+            },
+        );
     }
+
+    let repo_paths: Vec<PathBuf> = workspace.repos.iter().map(|r| r.path.clone()).collect();
+    let repo_names: Vec<String> = workspace.repos.iter().map(|r| r.name.clone()).collect();
+    // Planning runs at the shared parent of every repo so the plan stage can
+    // see all of them. For a one-repo group this is the repo's parent.
+    let plan_cwd = workspace::common_root(&workspace);
 
     let mut guard = RUNS.lock().await;
     let runs = guard.get_or_insert_with(HashMap::new);
@@ -115,23 +164,11 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let (tx, _rx) = broadcast::channel::<App>(SNAPSHOT_CHANNEL_CAPACITY);
     let completed = Arc::new(AtomicBool::new(false));
 
-    // Phase A parity: build a one-repo map keyed by the workspace name, so the
-    // multi-repo orchestrator runs a single repo exactly as before.
-    let mut repos = HashMap::new();
-    repos.insert(
-        workspace_name.clone(),
-        orchestrator::RepoRun {
-            path: repo.clone(),
-            base_ref,
-            integration_branch: integration,
-        },
-    );
-
     let task = spawn_pipeline(
         app.clone(),
         tx.clone(),
         completed.clone(),
-        repo.clone(),
+        plan_cwd,
         repos,
         req.goal,
         verify_cmd,
@@ -146,7 +183,8 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
             app,
             tx,
             task: Some(task),
-            repo_paths: vec![repo],
+            repo_paths,
+            repo_names,
             completed,
         },
     );
@@ -285,8 +323,8 @@ pub async fn subscribe(id: &str) -> Option<(App, broadcast::Receiver<App>)> {
 }
 
 /// One run's metadata snapshotted under the RUNS lock: id, workspace name,
-/// the repo paths it targets, and a handle to its live `App`.
-type RunSnapshot = (String, String, Vec<PathBuf>, Arc<Mutex<App>>);
+/// the names of the repos it targets, and a handle to its live `App`.
+type RunSnapshot = (String, String, Vec<String>, Arc<Mutex<App>>);
 
 /// A snapshot of every run started this session (active and finished),
 /// sorted by id, for the multi-run dashboard.
@@ -301,7 +339,7 @@ pub async fn list() -> Vec<shared::RunSummary> {
                 (
                     h.id.clone(),
                     h.workspace.clone(),
-                    h.repo_paths.clone(),
+                    h.repo_names.clone(),
                     h.app.clone(),
                 )
             })
@@ -310,19 +348,13 @@ pub async fn list() -> Vec<shared::RunSummary> {
     // Phase 2: build summaries by locking each app briefly, RUNS already
     // released.
     let mut out = Vec::with_capacity(handles.len());
-    for (id, workspace, repo_paths, app) in handles {
+    for (id, workspace, repos, app) in handles {
         let app = app.lock().await;
-        // The run's repos come from its config, not the epics. In Phase A a
-        // run always targets the single workspace repo.
-        let repos = vec![workspace.clone()];
-        let path = repo_paths
-            .first()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_default();
+        // The run's repos come from its config, not the epics: every repo the
+        // workspace group targets.
         out.push(shared::RunSummary {
             id,
             workspace,
-            path,
             goal: app.goal.clone(),
             phase: app.phase,
             total_cost: app.total_cost,

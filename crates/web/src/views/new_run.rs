@@ -36,6 +36,16 @@ enum FlowState {
     Error(String),
 }
 
+/// The directory the refine passes run in. For now this is the first repo's
+/// path; Task 7 refines this to the workspace group's common root.
+fn refine_root(workspace: &WorkspaceDto) -> String {
+    workspace
+        .repos
+        .first()
+        .map(|repo| repo.path.clone())
+        .unwrap_or_default()
+}
+
 /// Trims a text input and turns a blank value into `None`, matching the
 /// "empty means unset" convention `StartRunRequest`'s optional fields use.
 fn normalize(value: String) -> Option<String> {
@@ -93,8 +103,13 @@ pub fn NewRun() -> impl IntoView {
             match api::list_workspaces().await {
                 Ok(list) => match list.into_iter().find(|w| w.name == name) {
                     Some(found) => {
-                        base_input.set(found.base.clone().unwrap_or_default());
-                        into_input.set(found.integration.clone().unwrap_or_default());
+                        // Prefill the advanced options from the first repo's
+                        // defaults. Task 7 replaces these single fields with a
+                        // per-repo view.
+                        if let Some(first) = found.repos.first() {
+                            base_input.set(first.base.clone().unwrap_or_default());
+                            into_input.set(first.integration.clone().unwrap_or_default());
+                        }
                         workspace.set(Some(found));
                     }
                     None => {
@@ -126,9 +141,9 @@ pub fn NewRun() -> impl IntoView {
 
         if refine_enabled.get_untracked() {
             flow.set(FlowState::Submitting);
-            let repo = selected.path.clone();
+            let root = refine_root(&selected);
             spawn_local(async move {
-                match api::refine_questions(&repo, &goal).await {
+                match api::refine_questions(&root, &goal).await {
                     Ok(response) if response.questions.is_empty() => {
                         flow.set(FlowState::Confirming {
                             goal: response.refined_goal,
@@ -148,16 +163,12 @@ pub fn NewRun() -> impl IntoView {
                 }
             });
         } else {
-            let base = normalize(base_input.get_untracked());
-            let into = normalize(into_input.get_untracked());
             let verify = normalize(verify_input.get_untracked());
             flow.set(FlowState::Submitting);
             let navigate = navigate_for_start.clone();
             let request = StartRunRequest {
                 workspace: selected,
                 goal,
-                base,
-                into,
                 verify,
                 refine_cost: 0.0,
             };
@@ -187,9 +198,10 @@ pub fn NewRun() -> impl IntoView {
         };
         let original_goal = goal_input.get_untracked().trim().to_string();
         let qa_pairs: Vec<(String, String)> = questions.into_iter().zip(answers).collect();
+        let root = refine_root(&selected);
         flow.set(FlowState::Submitting);
         spawn_local(async move {
-            match api::refine_finalize(&selected.path, &original_goal, qa_pairs).await {
+            match api::refine_finalize(&root, &original_goal, qa_pairs).await {
                 Ok(response) => flow.set(FlowState::Confirming {
                     goal: response.refined_goal,
                     cost: cost + response.cost,
@@ -213,16 +225,12 @@ pub fn NewRun() -> impl IntoView {
             ));
             return;
         };
-        let base = normalize(base_input.get_untracked());
-        let into = normalize(into_input.get_untracked());
         let verify = normalize(verify_input.get_untracked());
         flow.set(FlowState::Submitting);
         let navigate = navigate_for_plan.clone();
         let request = StartRunRequest {
             workspace: selected,
             goal,
-            base,
-            into,
             verify,
             refine_cost: cost,
         };
@@ -318,10 +326,19 @@ pub fn NewRun() -> impl IntoView {
                     workspace
                         .get()
                         .map(|ws| {
+                            let repo_count = ws.repos.len();
+                            let repo_summary = if repo_count == 1 {
+                                ws.repos
+                                    .first()
+                                    .map(|r| r.path.clone())
+                                    .unwrap_or_default()
+                            } else {
+                                format!("{repo_count} repos")
+                            };
                             view! {
                                 <p class="sub">
                                     "Workspace " <strong>{ws.name.clone()}</strong> " \u{00b7} "
-                                    <span class="mono">{ws.path.clone()}</span>
+                                    <span class="mono">{repo_summary}</span>
                                 </p>
                             }
                         })

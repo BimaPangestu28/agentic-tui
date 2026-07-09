@@ -174,13 +174,21 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
             .find(|(name, _, _)| *name == run.workspace)
         {
             Some(group) => group.2.push(run.clone()),
-            None => groups.push((run.workspace.clone(), run.path.clone(), vec![run.clone()])),
+            None => {
+                // Summarize the group's repos: the single repo's name, or a
+                // count when the run spans several.
+                let repo_summary = match run.repos.as_slice() {
+                    [only] => only.clone(),
+                    repos => format!("{} repos", repos.len()),
+                };
+                groups.push((run.workspace.clone(), repo_summary, vec![run.clone()]));
+            }
         }
     }
 
     let ws_groups: Vec<_> = groups
         .into_iter()
-        .map(|(name, path, group_runs)| {
+        .map(|(name, repo_summary, group_runs)| {
             let count = group_runs.len();
             let new_run_href = format!("/run/new?workspace={name}");
             let cards: Vec<_> = group_runs
@@ -225,7 +233,7 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
                     <div class="ws-group-head">
                         <span class="ws-hex">"\u{2b21}"</span>
                         <span class="ws-name">{name}</span>
-                        <span class="ws-path">{path}</span>
+                        <span class="ws-path">{repo_summary}</span>
                         <span class="spacer"></span>
                         <span class="ws-count">{format!("{count} runs")}</span>
                         <A attr:class="btn btn-ghost btn-sm" href=new_run_href>

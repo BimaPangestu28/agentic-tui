@@ -8,9 +8,19 @@ use std::collections::HashSet;
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::components::A;
-use shared::WorkspaceDto;
+use shared::{RepoDto, WorkspaceDto};
 
 use crate::api;
+
+/// The last path component of `root`, used to name a scanned group until the
+/// onboarding grouping UI (Task 6) lets the user name it.
+fn root_basename(root: &str) -> String {
+    root.trim_end_matches('/')
+        .rsplit('/')
+        .find(|part| !part.is_empty())
+        .unwrap_or(root)
+        .to_string()
+}
 
 #[component]
 pub fn Workspaces() -> impl IntoView {
@@ -18,7 +28,7 @@ pub fn Workspaces() -> impl IntoView {
     let load_error = RwSignal::new(None::<String>);
 
     let root_input = RwSignal::new(String::new());
-    let scan_results = RwSignal::new(Vec::<WorkspaceDto>::new());
+    let scan_results = RwSignal::new(Vec::<RepoDto>::new());
     let checked_paths = RwSignal::new(HashSet::<String>::new());
     let scanning = RwSignal::new(false);
     let scan_error = RwSignal::new(None::<String>);
@@ -69,7 +79,7 @@ pub fn Workspaces() -> impl IntoView {
 
     let on_save = move |_| {
         let checked = checked_paths.get();
-        let selected: Vec<WorkspaceDto> = scan_results
+        let selected: Vec<RepoDto> = scan_results
             .get()
             .into_iter()
             .filter(|repo| checked.contains(&repo.path))
@@ -78,10 +88,16 @@ pub fn Workspaces() -> impl IntoView {
             save_error.set(Some("Check at least one repo before saving.".to_string()));
             return;
         }
+        // For now the checked repos become one group named after the scanned
+        // folder. Task 6 adds the real grouping-and-naming UI.
+        let group = WorkspaceDto {
+            name: root_basename(&root_input.get()),
+            repos: selected,
+        };
         saving.set(true);
         save_error.set(None);
         spawn_local(async move {
-            match api::save(&selected).await {
+            match api::save(std::slice::from_ref(&group)).await {
                 Ok(()) => {
                     scan_results.set(Vec::new());
                     checked_paths.set(HashSet::new());
@@ -119,14 +135,20 @@ pub fn Workspaces() -> impl IntoView {
             <ul class="workspace-list">
                 <For
                     each=move || workspaces.get()
-                    key=|workspace| workspace.path.clone()
+                    key=|workspace| workspace.name.clone()
                     children=move |workspace: WorkspaceDto| {
                         let href = format!("/run/new?workspace={}", workspace.name);
+                        let repo_count = workspace.repos.len();
+                        let summary = match workspace.repos.first() {
+                            Some(first) if repo_count == 1 => first.path.clone(),
+                            Some(_) => format!("{repo_count} repos"),
+                            None => "no repos".to_string(),
+                        };
                         view! {
                             <li class="workspace-row">
                                 <A href=href>
                                     <span class="workspace-name">{workspace.name.clone()}</span>
-                                    <span class="workspace-path">{workspace.path.clone()}</span>
+                                    <span class="workspace-path">{summary}</span>
                                 </A>
                             </li>
                         }
@@ -178,7 +200,7 @@ pub fn Workspaces() -> impl IntoView {
                                     <For
                                         each=move || scan_results.get()
                                         key=|repo| repo.path.clone()
-                                        children=move |repo: WorkspaceDto| {
+                                        children=move |repo: RepoDto| {
                                             let path_for_checked = repo.path.clone();
                                             let path_for_toggle = repo.path.clone();
                                             view! {

@@ -37,7 +37,7 @@ pub fn parse_refine(json: &str) -> anyhow::Result<RefineResult> {
 /// the session failed to write a usable file) together with the parsed result
 /// or the read/parse error. The cost is 0.0 only when the session did not run.
 async fn run_refine_pass(
-    repo: &Path,
+    root: &Path,
     prompt: &str,
     out_path: &Path,
     tx: &mpsc::UnboundedSender<StageEvent>,
@@ -45,7 +45,7 @@ async fn run_refine_pass(
     let _ = std::fs::remove_file(out_path);
     let spec = engine::StageSpec {
         tag: "refine",
-        cwd: repo,
+        cwd: root,
         model: config::MODEL_REFINE,
         tools: config::REFINE_TOOLS,
         max_turns: config::REFINE_MAX_TURNS,
@@ -67,11 +67,11 @@ async fn run_refine_pass(
 /// (the pass errored, or `.agentic-refine.json` was unreadable or
 /// unparseable), falls back to the original goal with no questions. The cost
 /// is real either way, since it is billed once the session runs.
-pub async fn questions(repo: &Path, goal: &str) -> (String, Vec<String>, f64) {
+pub async fn questions(root: &Path, goal: &str) -> (String, Vec<String>, f64) {
     let (tx, _rx) = mpsc::unbounded_channel::<StageEvent>();
-    let out_path = repo.join(".agentic-refine.json");
+    let out_path = root.join(".agentic-refine.json");
     let (cost, result) = run_refine_pass(
-        repo,
+        root,
         &config::refine_questions_prompt(goal, &out_path.to_string_lossy()),
         &out_path,
         &tx,
@@ -90,11 +90,11 @@ pub async fn questions(repo: &Path, goal: &str) -> (String, Vec<String>, f64) {
 /// Run refine pass 2 for the HTTP API: fold the user's answers into a final
 /// goal. On failure, falls back to the original goal; the cost is still
 /// reported.
-pub async fn finalize(repo: &Path, goal: &str, answers: &[(String, String)]) -> (String, f64) {
+pub async fn finalize(root: &Path, goal: &str, answers: &[(String, String)]) -> (String, f64) {
     let (tx, _rx) = mpsc::unbounded_channel::<StageEvent>();
-    let out_path = repo.join(".agentic-refine.json");
+    let out_path = root.join(".agentic-refine.json");
     let (cost, result) = run_refine_pass(
-        repo,
+        root,
         &config::refine_finalize_prompt(goal, answers, &out_path.to_string_lossy()),
         &out_path,
         &tx,

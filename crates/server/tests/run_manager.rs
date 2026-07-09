@@ -10,7 +10,7 @@ use std::process::Command;
 use std::time::Duration;
 
 use agentic_tui::run::{self, StartError};
-use shared::{App, Phase, StartRunRequest, WorkspaceDto};
+use shared::{App, Phase, RepoDto, StartRunRequest, WorkspaceDto};
 use tokio::sync::broadcast;
 
 /// Serializes the one test here that mutates the process-wide `PATH` env var
@@ -64,9 +64,12 @@ fn install_fake_claude(bin_dir: &Path) {
 fn workspace_dto(repo: &Path, name: &str) -> WorkspaceDto {
     WorkspaceDto {
         name: name.to_string(),
-        path: repo.to_string_lossy().to_string(),
-        base: None,
-        integration: None,
+        repos: vec![RepoDto {
+            name: name.to_string(),
+            path: repo.to_string_lossy().to_string(),
+            base: None,
+            integration: None,
+        }],
     }
 }
 
@@ -117,8 +120,6 @@ async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
     let request_a = StartRunRequest {
         workspace: workspace_dto(&repo_a, "regA"),
         goal: "do nothing".to_string(),
-        base: None,
-        into: None,
         verify: Some("true".to_string()),
         refine_cost: 0.0,
     };
@@ -130,8 +131,6 @@ async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
     let request_a_again = StartRunRequest {
         workspace: workspace_dto(&repo_a, "regA"),
         goal: "do something else".to_string(),
-        base: None,
-        into: None,
         verify: Some("true".to_string()),
         refine_cost: 0.0,
     };
@@ -144,8 +143,6 @@ async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
     let request_b = StartRunRequest {
         workspace: workspace_dto(&repo_b, "regB"),
         goal: "do nothing".to_string(),
-        base: None,
-        into: None,
         verify: Some("true".to_string()),
         refine_cost: 0.0,
     };
@@ -212,8 +209,6 @@ async fn a_run_streams_snapshots_to_done_with_the_expected_cost() {
     let request = StartRunRequest {
         workspace: workspace_dto(&repo, "happy"),
         goal: "do nothing".to_string(),
-        base: None,
-        into: None,
         verify: Some("true".to_string()),
         refine_cost: 0.0,
     };
@@ -254,11 +249,11 @@ async fn start_rejects_an_invalid_base_ref() {
     let _ = std::fs::remove_dir_all(&base);
     init_repo(&base);
 
+    let mut workspace = workspace_dto(&base, "badbase");
+    workspace.repos[0].base = Some("no-such-branch".to_string());
     let request = StartRunRequest {
-        workspace: workspace_dto(&base, "badbase"),
+        workspace,
         goal: "irrelevant".to_string(),
-        base: Some("no-such-branch".to_string()),
-        into: None,
         verify: None,
         refine_cost: 0.0,
     };
@@ -280,11 +275,11 @@ async fn start_rejects_a_checked_out_integration_target() {
     // `init_repo` leaves "main" checked out, so targeting it as the
     // integration branch must be rejected: merges into it would need a
     // worktree of a branch already checked out in the main working tree.
+    let mut workspace = workspace_dto(&base, "checkedout");
+    workspace.repos[0].integration = Some("main".to_string());
     let request = StartRunRequest {
-        workspace: workspace_dto(&base, "checkedout"),
+        workspace,
         goal: "irrelevant".to_string(),
-        base: None,
-        into: Some("main".to_string()),
         verify: None,
         refine_cost: 0.0,
     };
