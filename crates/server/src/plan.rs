@@ -17,6 +17,10 @@ pub struct Epic {
     pub id: String,
     pub title: String,
     #[serde(default)]
+    pub repo: String,
+    #[serde(default)]
+    pub verify: Option<String>,
+    #[serde(default)]
     pub depends_on: Vec<String>,
     #[serde(default)]
     pub acceptance: Vec<String>,
@@ -90,6 +94,29 @@ impl Plan {
         }
         Ok(order)
     }
+
+    /// Set `repo` on every epic that has none. Used when a run targets exactly
+    /// one repo, so the planner may omit the repo tag.
+    pub fn fill_missing_repo(&mut self, repo_name: &str) {
+        for epic in &mut self.epics {
+            if epic.repo.is_empty() {
+                epic.repo = repo_name.to_string();
+            }
+        }
+    }
+
+    /// Every epic's `repo` must be non-empty and name one of `repo_names`.
+    pub fn validate_repos(&self, repo_names: &[String]) -> anyhow::Result<()> {
+        for epic in &self.epics {
+            if epic.repo.is_empty() {
+                anyhow::bail!("epic {} has no repo", epic.id);
+            }
+            if !repo_names.iter().any(|name| name == &epic.repo) {
+                anyhow::bail!("epic {} names unknown repo {}", epic.id, epic.repo);
+            }
+        }
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -153,5 +180,52 @@ mod tests {
         let pos_a = order.iter().position(|id| id == "a").unwrap();
         let pos_b = order.iter().position(|id| id == "b").unwrap();
         assert!(pos_a < pos_b);
+    }
+
+    #[test]
+    fn parses_epic_repo_and_verify() {
+        let json = r#"{"epics":[
+            {"id":"a","title":"A","repo":"greentic","verify":"cargo test"},
+            {"id":"b","title":"B","repo":"billing","depends_on":["a"]}
+        ]}"#;
+        let plan = parse_plan(json).unwrap();
+        assert_eq!(plan.epics[0].repo, "greentic");
+        assert_eq!(plan.epics[0].verify.as_deref(), Some("cargo test"));
+        assert_eq!(plan.epics[1].repo, "billing");
+        assert_eq!(plan.epics[1].verify, None);
+    }
+
+    #[test]
+    fn fill_missing_repo_only_fills_blanks() {
+        let mut plan =
+            parse_plan(r#"{"epics":[{"id":"a","title":"A"},{"id":"b","title":"B","repo":"x"}]}"#)
+                .unwrap();
+        plan.fill_missing_repo("solo");
+        assert_eq!(plan.epics[0].repo, "solo");
+        assert_eq!(plan.epics[1].repo, "x", "an already-set repo is left alone");
+    }
+
+    #[test]
+    fn validate_repos_requires_known_nonempty_repo() {
+        let names = vec!["greentic".to_string(), "billing".to_string()];
+
+        let ok = parse_plan(
+            r#"{"epics":[{"id":"a","title":"A","repo":"greentic","depends_on":[]},
+                        {"id":"b","title":"B","repo":"billing","depends_on":["a"]}]}"#,
+        )
+        .unwrap();
+        assert!(
+            ok.validate_repos(&names).is_ok(),
+            "cross-repo dep is allowed"
+        );
+
+        let unknown = parse_plan(r#"{"epics":[{"id":"a","title":"A","repo":"ghost"}]}"#).unwrap();
+        assert!(unknown.validate_repos(&names).is_err());
+
+        let blank = parse_plan(r#"{"epics":[{"id":"a","title":"A"}]}"#).unwrap();
+        assert!(
+            blank.validate_repos(&names).is_err(),
+            "empty repo is rejected"
+        );
     }
 }
