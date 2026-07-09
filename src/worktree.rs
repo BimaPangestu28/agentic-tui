@@ -47,8 +47,9 @@ fn worktrees_root(repo: &Path) -> PathBuf {
 }
 
 /// Create a worktree and branch for an epic, based off `base_ref` (a commit,
-/// branch, or "HEAD"). Dependency-free epics use HEAD; dependent epics use the
-/// integration branch so they inherit their merged dependencies.
+/// branch, or "HEAD"). Dependency-free epics use the configured base ref;
+/// dependent epics use the integration branch so they inherit their merged
+/// dependencies.
 pub async fn create(repo: &Path, epic_id: &str, base_ref: &str) -> anyhow::Result<EpicWorktree> {
     let branch = format!("agentic/{epic_id}");
     let path = worktrees_root(repo).join(epic_id);
@@ -95,8 +96,8 @@ pub async fn cleanup_all(repo: &Path) -> anyhow::Result<()> {
 }
 
 /// Merge an epic branch into the integration branch without disturbing the main
-/// working tree. The integration branch is created from the repo HEAD on first
-/// use and checked out in a dedicated worktree; all merges happen there. Returns
+/// working tree. The integration branch is created from `base_ref` on first use
+/// and checked out in a dedicated worktree; all merges happen there. Returns
 /// Conflict (and aborts the merge) if the branch does not apply cleanly.
 pub async fn merge_into(
     repo: &Path,

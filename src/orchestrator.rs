@@ -185,9 +185,10 @@ async fn run_epic(
     tx: &UnboundedSender<AppEvent>,
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
     for attempt in 0..2 {
-        // A dependency-free epic branches from HEAD; a dependent epic branches
-        // from the integration branch, which already holds its merged deps
-        // (an epic only becomes ready after all its deps have merged).
+        // A dependency-free epic branches from the configured base ref; a
+        // dependent epic branches from the integration branch, which already
+        // holds its merged deps (an epic only becomes ready after all its deps
+        // have merged).
         let base_ref = if epic.depends_on.is_empty() {
             config.base_ref.clone()
         } else {
