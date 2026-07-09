@@ -16,6 +16,7 @@ mod engine;
 mod event;
 mod orchestrator;
 mod plan;
+mod refine;
 mod ui;
 mod workspace;
 mod worktree;
