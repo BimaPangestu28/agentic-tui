@@ -17,10 +17,6 @@ pub fn Workspaces() -> impl IntoView {
     let workspaces = RwSignal::new(Vec::<WorkspaceDto>::new());
     let load_error = RwSignal::new(None::<String>);
 
-    // The add-workspace panel starts collapsed; it is forced open once the
-    // initial load comes back empty, and can otherwise be toggled by hand.
-    let panel_expanded = RwSignal::new(false);
-
     let root_input = RwSignal::new(String::new());
     let scan_results = RwSignal::new(Vec::<WorkspaceDto>::new());
     let checked_paths = RwSignal::new(HashSet::<String>::new());
@@ -35,9 +31,6 @@ pub fn Workspaces() -> impl IntoView {
         spawn_local(async move {
             match api::list_workspaces().await {
                 Ok(list) => {
-                    if list.is_empty() {
-                        panel_expanded.set(true);
-                    }
                     workspaces.set(list);
                     load_error.set(None);
                 }
@@ -112,7 +105,10 @@ pub fn Workspaces() -> impl IntoView {
 
     view! {
         <div class="workspaces-view">
-            <h1>"Workspaces"</h1>
+            <div class="page-head">
+                <h1>"Workspaces"</h1>
+                <p class="sub">"Pick a repository to run against, or add new ones."</p>
+            </div>
 
             {move || {
                 load_error
@@ -138,52 +134,47 @@ pub fn Workspaces() -> impl IntoView {
                 />
             </ul>
 
-            <button
-                type="button"
-                on:click=move |_| panel_expanded.update(|expanded| *expanded = !*expanded)
-            >
+            <div class="add-workspace-panel">
+                <h2>"Add workspace"</h2>
+                <p class="hint">
+                    "Point at a folder and scan for git repositories inside it."
+                </p>
+                <div class="scan-row">
+                    <input
+                        type="text"
+                        class="mono"
+                        placeholder="/path/to/projects"
+                        prop:value=move || root_input.get()
+                        on:input=move |ev| {
+                            root_input.set(event_target_value(&ev));
+                        }
+                    />
+                    <button
+                        type="button"
+                        class="btn-primary"
+                        disabled=move || scanning.get()
+                        on:click=on_scan
+                    >
+                        {move || if scanning.get() { "Scanning..." } else { "Scan" }}
+                    </button>
+                </div>
+
                 {move || {
-                    if panel_expanded.get() {
-                        "Hide add workspace"
-                    } else {
-                        "Add workspace"
-                    }
+                    scan_error.get().map(|err| view! { <p class="error">{err}</p> })
                 }}
-            </button>
 
-            {move || {
-                panel_expanded
-                    .get()
-                    .then(|| {
-                        view! {
-                            <div class="add-workspace-panel">
-                                <h2>"Add workspace"</h2>
-                                <label>
-                                    "Folder to scan"
-                                    <input
-                                        type="text"
-                                        placeholder="/path/to/projects"
-                                        prop:value=move || root_input.get()
-                                        on:input=move |ev| {
-                                            root_input.set(event_target_value(&ev));
-                                        }
-                                    />
-                                </label>
-                                <button
-                                    type="button"
-                                    disabled=move || scanning.get()
-                                    on:click=on_scan
-                                >
-                                    {move || if scanning.get() { "Scanning..." } else { "Scan" }}
-                                </button>
-
-                                {move || {
-                                    scan_error
-                                        .get()
-                                        .map(|err| view! { <p class="error">{err}</p> })
-                                }}
-
-                                <ul class="scan-results">
+                {move || {
+                    (!scan_results.get().is_empty())
+                        .then(|| {
+                            view! {
+                                <div class="scan-results">
+                                    <div class="scan-results-head">
+                                        <span>
+                                            {move || {
+                                                format!("{} repositories found", scan_results.get().len())
+                                            }}
+                                        </span>
+                                    </div>
                                     <For
                                         each=move || scan_results.get()
                                         key=|repo| repo.path.clone()
@@ -191,44 +182,44 @@ pub fn Workspaces() -> impl IntoView {
                                             let path_for_checked = repo.path.clone();
                                             let path_for_toggle = repo.path.clone();
                                             view! {
-                                                <li class="scan-result-row">
-                                                    <label>
-                                                        <input
-                                                            type="checkbox"
-                                                            prop:checked=move || {
-                                                                checked_paths.get().contains(&path_for_checked)
-                                                            }
-                                                            on:change=move |_| {
-                                                                toggle_checked(path_for_toggle.clone());
-                                                            }
-                                                        />
-                                                        {repo.name.clone()}
-                                                        " "
-                                                        {repo.path.clone()}
-                                                    </label>
-                                                </li>
+                                                <label class="scan-result-row">
+                                                    <input
+                                                        type="checkbox"
+                                                        prop:checked=move || {
+                                                            checked_paths.get().contains(&path_for_checked)
+                                                        }
+                                                        on:change=move |_| {
+                                                            toggle_checked(path_for_toggle.clone());
+                                                        }
+                                                    />
+                                                    <span class="info">
+                                                        <span class="workspace-name">{repo.name.clone()}</span>
+                                                        <span class="workspace-path">{repo.path.clone()}</span>
+                                                    </span>
+                                                </label>
                                             }
                                         }
                                     />
-                                </ul>
 
-                                {move || {
-                                    save_error
-                                        .get()
-                                        .map(|err| view! { <p class="error">{err}</p> })
-                                }}
+                                    {move || {
+                                        save_error.get().map(|err| view! { <p class="error">{err}</p> })
+                                    }}
 
-                                <button
-                                    type="button"
-                                    disabled=move || saving.get() || scan_results.get().is_empty()
-                                    on:click=on_save
-                                >
-                                    {move || if saving.get() { "Saving..." } else { "Save" }}
-                                </button>
-                            </div>
-                        }
-                    })
-            }}
+                                    <div class="new-run-actions">
+                                        <button
+                                            type="button"
+                                            class="btn-primary"
+                                            disabled=move || saving.get()
+                                            on:click=on_save
+                                        >
+                                            {move || if saving.get() { "Saving..." } else { "Save" }}
+                                        </button>
+                                    </div>
+                                </div>
+                            }
+                        })
+                }}
+            </div>
         </div>
     }
 }
