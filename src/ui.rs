@@ -46,17 +46,13 @@ pub fn render_picker(f: &mut Frame, workspaces: &[Workspace], selected: usize) {
 /// Goal input screen shown when no goal was given on the command line.
 pub fn render_goal_input(f: &mut Frame, workspace: &str, buffer: &str) {
     let area = f.area();
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-    let title = format!(" Goal for {workspace} (Enter to run, Esc to cancel) ");
-    let input = Paragraph::new(Line::from(vec![
-        Span::raw(buffer.to_string()),
-        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
-    ]))
-    .block(Block::default().borders(Borders::ALL).title(title));
-    f.render_widget(input, rows[0]);
+    let title = format!(
+        " Goal for {workspace} (Enter to run, end a line with \\ for a new line, Esc to cancel) "
+    );
+    let input = Paragraph::new(format!("{buffer}\u{2588}"))
+        .wrap(Wrap { trim: false })
+        .block(Block::default().borders(Borders::ALL).title(title));
+    f.render_widget(input, area);
 }
 
 /// Status frame shown while a refine pass runs.
@@ -108,20 +104,14 @@ pub fn render_refine_question(
 /// The final refined goal in an editable field, confirmed before planning.
 pub fn render_goal_confirm(f: &mut Frame, goal: &str) {
     let area = f.area();
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Length(3), Constraint::Min(0)])
-        .split(area);
-    let input = Paragraph::new(Line::from(vec![
-        Span::raw(goal.to_string()),
-        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
-    ]))
-    .block(
-        Block::default()
-            .borders(Borders::ALL)
-            .title(" Final goal (edit if needed, Enter to plan, Esc to use original) "),
-    );
-    f.render_widget(input, rows[0]);
+    let input = Paragraph::new(format!("{goal}\u{2588}"))
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default().borders(Borders::ALL).title(
+                " Final goal (edit if needed, Enter to plan, end a line with \\ for a new line, Esc to use original) ",
+            ),
+        );
+    f.render_widget(input, area);
 }
 
 /// Onboarding screen one: an editable path to scan for git repositories.

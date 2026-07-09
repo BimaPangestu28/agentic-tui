@@ -278,8 +278,15 @@ fn run_goal_input(workspace: &str) -> anyhow::Result<Option<String>> {
             match key.code {
                 KeyCode::Char('c') if key.modifiers == KeyModifiers::CONTROL => break None,
                 KeyCode::Esc => break None,
-                KeyCode::Enter if !buffer.trim().is_empty() => {
-                    break Some(buffer.trim().to_string());
+                KeyCode::Enter => {
+                    // A line ending in a backslash continues onto a new line;
+                    // otherwise Enter submits the goal.
+                    if buffer.ends_with('\\') {
+                        buffer.pop();
+                        buffer.push('\n');
+                    } else if !buffer.trim().is_empty() {
+                        break Some(buffer.trim().to_string());
+                    }
                 }
                 KeyCode::Backspace => {
                     buffer.pop();

@@ -200,8 +200,15 @@ pub async fn run(repo: &Path, goal: &str) -> anyhow::Result<RefineOutcome> {
             match (key.code, key.modifiers) {
                 (KeyCode::Char('c'), KeyModifiers::CONTROL) => break None,
                 (KeyCode::Esc, _) => break Some(goal.to_string()),
-                (KeyCode::Enter, _) if !buffer.trim().is_empty() => {
-                    break Some(buffer.trim().to_string());
+                (KeyCode::Enter, _) => {
+                    // A line ending in a backslash continues onto a new line;
+                    // otherwise Enter accepts the goal.
+                    if buffer.ends_with('\\') {
+                        buffer.pop();
+                        buffer.push('\n');
+                    } else if !buffer.trim().is_empty() {
+                        break Some(buffer.trim().to_string());
+                    }
                 }
                 (KeyCode::Backspace, _) => {
                     buffer.pop();
