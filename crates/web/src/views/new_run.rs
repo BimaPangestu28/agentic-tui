@@ -294,6 +294,12 @@ pub fn NewRun() -> impl IntoView {
                 </label>
 
                 <div class="new-run-actions">
+                    <button type="button" class="btn-ghost" on:click={
+                        let nav = navigate.clone();
+                        move |_| nav("/", Default::default())
+                    }>
+                        "Cancel"
+                    </button>
                     <button type="button" class="btn-primary" on:click=on_start.clone()>
                         {move || {
                             if refine_enabled.get() { "Refine & plan" } else { "Start run" }

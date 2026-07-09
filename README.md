@@ -112,11 +112,16 @@ browser and use the printed URL yourself:
 cargo run -p agentic-tui -- --no-open
 ```
 
-In the browser, the landing page lists configured workspaces (or the
-onboarding panel if none are configured yet). Selecting a workspace opens the
-new-run form, where you enter the goal and, optionally, a base branch, an
-integration branch, and a verify command; each falls back to the workspace's
-configured default, then to the built-in default, if left blank.
+In the browser, the app opens on a Dashboard that lists every run of the
+session (live and finished). Only one run per workspace can be in flight at a
+time. Workspaces are managed at `/workspaces` (or via the onboarding panel if
+none are configured yet). Run history is session-scoped, kept in memory while
+the server runs and not persisted to disk.
+
+To start a new run, select a workspace to open the new-run form, where you
+enter the goal and, optionally, a base branch, an integration branch, and a
+verify command; each falls back to the workspace's configured default, then to
+the built-in default, if left blank.
 
 Before planning, the tool runs a goal-refine step by default: a short `claude`
 pass reads the repository, rewrites your goal to be more specific, and may
