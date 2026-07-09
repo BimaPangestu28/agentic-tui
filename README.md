@@ -157,10 +157,16 @@ make run GOAL="Add a health check endpoint" WORKSPACE=greentic
 
 ## Known limitations (v1)
 
-- On abort (q/Ctrl-C), running child processes are killed but the
-  `.agentic-worktrees/` directory is left in place. The next run reuses it or
-  force-recreates it.
+- On a mid-flight abort (q/Ctrl-C while epics are still running), the child
+  processes are killed and the `.agentic-worktrees/` directory is removed so the
+  workspace is left tidy. Merged work survives on `agentic-integration`. Quitting
+  after the run has finished leaves the worktrees in place, so a conflict
+  worktree kept for a manual merge is preserved.
 - The global budget is checked before starting each new epic. Epics already
   in flight still finish, so the final cost can slightly exceed the budget.
 - Merge conflicts are reported and left on the `agentic/<epic-id>` branch for
   manual merge. They are not auto-resolved.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

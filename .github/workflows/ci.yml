@@ -1,0 +1,26 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    name: fmt-check, clippy, test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo build
+        uses: Swatinem/rust-cache@v2
+
+      # `make verify` runs `cargo fmt --check`, `cargo clippy --all-targets -- -D
+      # warnings`, and `cargo test`, matching the local pre-commit gate exactly.
+      - name: Run make verify
+        run: make verify

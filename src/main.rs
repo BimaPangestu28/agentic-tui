@@ -342,7 +342,7 @@ async fn main() -> anyhow::Result<()> {
     let repo_run = repo.clone();
     let goal_run = goal.clone();
     let verify_run = verify_cmd.clone();
-    tokio::spawn(async move {
+    let pipeline_handle = tokio::spawn(async move {
         if let Err(e) = run_pipeline(&repo_run, &goal_run, &verify_run, &pipeline_tx).await {
             let _ = pipeline_tx.send(AppEvent::Fatal(e.to_string()));
         }
@@ -354,6 +354,11 @@ async fn main() -> anyhow::Result<()> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
+    // Whether the pipeline finished (Done/Fatal) before the user quit. A quit
+    // while the pipeline is still running is a mid-flight abort, which cleans up
+    // the epic worktrees; a quit after completion leaves them in place so any
+    // conflict worktree kept for a manual merge survives.
+    let mut completed = false;
     loop {
         terminal.draw(|f| ui::render(f, &app))?;
         match rx.recv().await {
@@ -367,16 +372,32 @@ async fn main() -> anyhow::Result<()> {
                 let done = matches!(other, AppEvent::Done | AppEvent::Fatal(_));
                 app.apply(other);
                 if done {
+                    completed = true;
                     terminal.draw(|f| ui::render(f, &app))?;
                 }
             }
-            None => break,
+            None => {
+                completed = true;
+                break;
+            }
         }
     }
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
     terminal.show_cursor()?;
+
+    if !completed {
+        // Cancel the pipeline task so its child `claude`/`git` processes are
+        // killed on drop (they run with `kill_on_drop`), then remove the epic
+        // worktrees left behind. Awaiting the aborted task guarantees the child
+        // handles are dropped before cleanup touches their directories.
+        pipeline_handle.abort();
+        let _ = pipeline_handle.await;
+        if let Err(e) = worktree::cleanup_all(&repo).await {
+            eprintln!("warning: could not clean up worktrees: {e}");
+        }
+    }
 
     print_report(&app, &repo);
     Ok(())
