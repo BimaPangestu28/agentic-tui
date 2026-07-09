@@ -23,6 +23,12 @@ rust-embed = "8"
 open = "5"
 mime_guess = "2"
 
+[dev-dependencies]
+# `ServiceExt::oneshot` drives `router()` end to end in the HTTP API tests
+# without binding a socket, so each test exercises real routing, extraction,
+# and status codes against the same router the binary serves.
+tower = { version = "0.5", features = ["util"] }
+
 [lib]
 name = "agentic_tui"
 path = "src/lib.rs"

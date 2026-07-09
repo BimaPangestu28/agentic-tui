@@ -59,6 +59,18 @@ lint: web ## Build the web UI, then run clippy with warnings denied on the nativ
 test: web ## Build the web UI, then run the test suite for the native crates
 	$(CARGO) test
 
+.PHONY: test-unit
+test-unit: web ## Run unit tests only (in-crate #[cfg(test)] modules)
+	$(CARGO) test --lib
+
+.PHONY: test-e2e
+test-e2e: web ## Run end-to-end integration tests (crates/server/tests)
+	$(CARGO) test --test '*'
+
+.PHONY: test-e2e-browser
+test-e2e-browser: release ## Run the Playwright browser smoke test against the release binary
+	cd e2e && npm install && npx playwright install chromium && npx playwright test
+
 .PHONY: web-check
 web-check: ## Type-check the web crate for its wasm32 target
 	$(CARGO) check -p web --target wasm32-unknown-unknown

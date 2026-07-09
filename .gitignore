@@ -11,6 +11,11 @@
 *.env
 .env.local
 
+# Browser e2e (Playwright) artifacts
+/e2e/node_modules/
+/e2e/test-results/
+/e2e/playwright-report/
+
 # OS noise
 .DS_Store
 
