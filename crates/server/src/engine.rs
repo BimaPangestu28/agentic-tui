@@ -11,6 +11,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 use crate::config;
 use crate::event::AppEvent;
+use shared::StageEvent;
 
 pub struct StageSpec<'a> {
     pub tag: &'a str,
@@ -159,22 +160,22 @@ pub async fn run_stage(
         for message in parse_stage_line(&line) {
             match message {
                 StageMessage::Init { model } => {
-                    let _ = tx.send(AppEvent::StageLog {
+                    let _ = tx.send(AppEvent::Stage(StageEvent::StageLog {
                         tag: tag.to_string(),
                         line: format!("session init ({model})"),
-                    });
+                    }));
                 }
                 StageMessage::Assistant { preview } => {
-                    let _ = tx.send(AppEvent::StageAssistant {
+                    let _ = tx.send(AppEvent::Stage(StageEvent::StageAssistant {
                         tag: tag.to_string(),
                         text: preview,
-                    });
+                    }));
                 }
                 StageMessage::Tool { name } => {
-                    let _ = tx.send(AppEvent::StageTool {
+                    let _ = tx.send(AppEvent::Stage(StageEvent::StageTool {
                         tag: tag.to_string(),
                         name,
-                    });
+                    }));
                 }
                 StageMessage::Result {
                     cost: line_cost,

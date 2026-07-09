@@ -432,7 +432,7 @@ async fn main() -> anyhow::Result<()> {
         )
         .await
         {
-            let _ = pipeline_tx.send(AppEvent::Fatal(e.to_string()));
+            let _ = pipeline_tx.send(AppEvent::Stage(shared::StageEvent::Fatal(e.to_string())));
         }
     });
 
@@ -456,9 +456,12 @@ async fn main() -> anyhow::Result<()> {
                 _ => {}
             },
             Some(AppEvent::Tick) => app.tick(),
-            Some(other) => {
-                let done = matches!(other, AppEvent::Done | AppEvent::Fatal(_));
-                app.apply(other);
+            Some(AppEvent::Stage(event)) => {
+                let done = matches!(
+                    event,
+                    shared::StageEvent::Done | shared::StageEvent::Fatal(_)
+                );
+                app.apply_stage(event);
                 if done {
                     completed = true;
                     terminal.draw(|f| ui::render(f, &app))?;
@@ -503,7 +506,7 @@ async fn run_pipeline(
 ) -> anyhow::Result<()> {
     // Count refine spending toward the run total before planning starts.
     if refine_cost > 0.0 {
-        let _ = tx.send(AppEvent::Cost(refine_cost));
+        let _ = tx.send(AppEvent::Stage(shared::StageEvent::Cost(refine_cost)));
     }
     let plan_path = repo.join(".agentic-plan.json");
     let plan_path_str = plan_path.to_string_lossy().to_string();
@@ -518,7 +521,9 @@ async fn run_pipeline(
         prompt: &prompt,
     };
     let outcome = engine::run_stage(&spec, tx).await?;
-    let _ = tx.send(AppEvent::Cost(refine_cost + outcome.cost));
+    let _ = tx.send(AppEvent::Stage(shared::StageEvent::Cost(
+        refine_cost + outcome.cost,
+    )));
 
     let plan_text = std::fs::read_to_string(&plan_path)
         .map_err(|e| anyhow::anyhow!("plan.json was not written: {e}"))?;
@@ -533,7 +538,9 @@ async fn run_pipeline(
             depends_on: epic.depends_on.clone(),
         })
         .collect();
-    let _ = tx.send(AppEvent::PlanReady { epics: epic_metas });
+    let _ = tx.send(AppEvent::Stage(shared::StageEvent::PlanReady {
+        epics: epic_metas,
+    }));
 
     let run_config = orchestrator::RunConfig {
         repo: repo.to_path_buf(),

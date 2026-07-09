@@ -16,6 +16,7 @@ use crate::engine::{self, StageSpec};
 use crate::event::AppEvent;
 use crate::plan::{Epic, Plan};
 use crate::worktree::{self, MergeResult};
+use shared::StageEvent;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpicState {
@@ -209,24 +210,24 @@ async fn run_epic(
         {
             let mut total = spent.lock().await;
             *total += outcome.cost;
-            let _ = tx.send(AppEvent::Cost(*total));
+            let _ = tx.send(AppEvent::Stage(StageEvent::Cost(*total)));
         }
-        let _ = tx.send(AppEvent::EpicVerifying {
+        let _ = tx.send(AppEvent::Stage(StageEvent::EpicVerifying {
             id: epic.id.clone(),
-        });
+        }));
         if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
-            let _ = tx.send(AppEvent::EpicSucceeded {
+            let _ = tx.send(AppEvent::Stage(StageEvent::EpicSucceeded {
                 id: epic.id.clone(),
                 cost: outcome.cost,
-            });
+            }));
             return Ok(Some(wt));
         }
         let _ = worktree::remove(&config.repo, &wt).await;
         if attempt == 0 {
-            let _ = tx.send(AppEvent::StageLog {
+            let _ = tx.send(AppEvent::Stage(StageEvent::StageLog {
                 tag: epic.id.clone(),
                 line: "verify failed, retrying once".to_string(),
-            });
+            }));
         }
     }
     Ok(None)
@@ -271,10 +272,10 @@ pub async fn run(
                 let _ = handle.await;
             } else {
                 if over_budget {
-                    let _ = tx.send(AppEvent::StageLog {
+                    let _ = tx.send(AppEvent::Stage(StageEvent::StageLog {
                         tag: "orchestrator".to_string(),
                         line: "global budget reached, not starting new epics".to_string(),
-                    });
+                    }));
                 }
                 break;
             }
@@ -287,10 +288,10 @@ pub async fn run(
                 sched.mark_running(&id);
             }
             let epic = epics_by_id[&id].clone();
-            let _ = tx.send(AppEvent::EpicStarted {
+            let _ = tx.send(AppEvent::Stage(StageEvent::EpicStarted {
                 id: epic.id.clone(),
                 title: epic.title.clone(),
-            });
+            }));
             let scheduler = scheduler.clone();
             let config = config.clone();
             let spent = spent.clone();
@@ -311,9 +312,9 @@ pub async fn run(
                         };
                         match merged {
                             Ok(MergeResult::Merged) => {
-                                let _ = tx.send(AppEvent::EpicMerged {
+                                let _ = tx.send(AppEvent::Stage(StageEvent::EpicMerged {
                                     id: epic.id.clone(),
-                                });
+                                }));
                                 {
                                     let mut sched = scheduler.lock().await;
                                     sched.mark_succeeded(&epic.id);
@@ -322,18 +323,18 @@ pub async fn run(
                                 let _ = worktree::remove(&config.repo, &wt).await;
                             }
                             Ok(MergeResult::Conflict) => {
-                                let _ = tx.send(AppEvent::EpicConflict {
+                                let _ = tx.send(AppEvent::Stage(StageEvent::EpicConflict {
                                     id: epic.id.clone(),
-                                });
+                                }));
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
                                 // Keep the worktree and branch agentic/<id> for manual merge.
                             }
                             Err(e) => {
-                                let _ = tx.send(AppEvent::EpicFailed {
+                                let _ = tx.send(AppEvent::Stage(StageEvent::EpicFailed {
                                     id: epic.id.clone(),
                                     reason: e.to_string(),
-                                });
+                                }));
                                 let mut sched = scheduler.lock().await;
                                 sched.mark_failed(&epic.id);
                                 // Keep the worktree and branch for diagnosis.
@@ -341,18 +342,18 @@ pub async fn run(
                         }
                     }
                     Ok(None) => {
-                        let _ = tx.send(AppEvent::EpicFailed {
+                        let _ = tx.send(AppEvent::Stage(StageEvent::EpicFailed {
                             id: epic.id.clone(),
                             reason: "verify failed after retry".to_string(),
-                        });
+                        }));
                         let mut sched = scheduler.lock().await;
                         sched.mark_failed(&epic.id);
                     }
                     Err(e) => {
-                        let _ = tx.send(AppEvent::EpicFailed {
+                        let _ = tx.send(AppEvent::Stage(StageEvent::EpicFailed {
                             id: epic.id.clone(),
                             reason: e.to_string(),
-                        });
+                        }));
                         let mut sched = scheduler.lock().await;
                         sched.mark_failed(&epic.id);
                     }
@@ -360,7 +361,7 @@ pub async fn run(
                 let sched = scheduler.lock().await;
                 for (eid, state) in sched.snapshot() {
                     if state == EpicState::Skipped {
-                        let _ = tx.send(AppEvent::EpicSkipped { id: eid });
+                        let _ = tx.send(AppEvent::Stage(StageEvent::EpicSkipped { id: eid }));
                     }
                 }
             }));
@@ -370,7 +371,7 @@ pub async fn run(
     for handle in handles {
         let _ = handle.await;
     }
-    let _ = tx.send(AppEvent::Done);
+    let _ = tx.send(AppEvent::Stage(StageEvent::Done));
     Ok(())
 }
 
