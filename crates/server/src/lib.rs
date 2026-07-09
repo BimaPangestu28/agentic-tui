@@ -27,13 +27,14 @@ pub fn resolve_setting(flag: Option<&str>, configured: Option<&str>, default: &s
     flag.or(configured).unwrap_or(default).to_string()
 }
 
-/// Plan the goal, then run the orchestrator.
+/// Plan the goal, then run the orchestrator. `repos` maps each repo name to
+/// where it lives and how its epics branch and merge; `default_verify` is the
+/// verify command an epic uses when it does not specify its own.
 pub async fn run_pipeline(
-    repo: &std::path::Path,
+    plan_cwd: &std::path::Path,
+    repos: std::collections::HashMap<String, orchestrator::RepoRun>,
     goal: &str,
-    verify_cmd: &str,
-    base_ref: &str,
-    integration: &str,
+    default_verify: &str,
     refine_cost: f64,
     tx: &mpsc::UnboundedSender<StageEvent>,
 ) -> anyhow::Result<()> {
@@ -41,12 +42,21 @@ pub async fn run_pipeline(
     if refine_cost > 0.0 {
         let _ = tx.send(StageEvent::Cost { total: refine_cost });
     }
-    let plan_path = repo.join(".agentic-plan.json");
+    let plan_path = plan_cwd.join(".agentic-plan.json");
     let plan_path_str = plan_path.to_string_lossy().to_string();
-    let prompt = config::plan_prompt(goal, &plan_path_str);
+    // Sorted so the prompt lists repos deterministically.
+    let repo_list: Vec<(String, String)> = {
+        let mut v: Vec<_> = repos
+            .iter()
+            .map(|(name, rc)| (name.clone(), rc.path.to_string_lossy().to_string()))
+            .collect();
+        v.sort();
+        v
+    };
+    let prompt = config::plan_prompt(goal, &plan_path_str, &repo_list);
     let spec = engine::StageSpec {
         tag: "plan",
-        cwd: repo,
+        cwd: plan_cwd,
         model: config::MODEL_PLAN,
         tools: config::PLAN_TOOLS,
         max_turns: config::PLAN_MAX_TURNS,
@@ -60,8 +70,14 @@ pub async fn run_pipeline(
 
     let plan_text = std::fs::read_to_string(&plan_path)
         .map_err(|e| anyhow::anyhow!("plan.json was not written: {e}"))?;
-    let parsed = plan::parse_plan(&plan_text)?;
+    let mut parsed = plan::parse_plan(&plan_text)?;
+    let names: Vec<String> = repos.keys().cloned().collect();
+    // A single-repo run may omit the repo tag on each epic; fill it in.
+    if names.len() == 1 {
+        parsed.fill_missing_repo(&names[0]);
+    }
     parsed.validate()?;
+    parsed.validate_repos(&names)?;
     let epic_metas: Vec<EpicMeta> = parsed
         .epics
         .iter()
@@ -75,11 +91,9 @@ pub async fn run_pipeline(
     let _ = tx.send(StageEvent::PlanReady { epics: epic_metas });
 
     let run_config = orchestrator::RunConfig {
-        repo: repo.to_path_buf(),
+        repos,
         goal: goal.to_string(),
-        verify_cmd: verify_cmd.to_string(),
-        integration_branch: integration.to_string(),
-        base_ref: base_ref.to_string(),
+        default_verify: default_verify.to_string(),
         budget_usd: config::GLOBAL_BUDGET_USD,
         initial_cost: refine_cost + outcome.cost,
     };

@@ -153,14 +153,35 @@ impl Scheduler {
     }
 }
 
-pub struct RunConfig {
-    pub repo: PathBuf,
-    pub goal: String,
-    pub verify_cmd: String,
-    pub integration_branch: String,
+/// One repository a run targets: where it lives, the ref its epics branch
+/// from, and the branch their work merges into.
+pub struct RepoRun {
+    pub path: PathBuf,
     pub base_ref: String,
+    pub integration_branch: String,
+}
+
+pub struct RunConfig {
+    pub repos: HashMap<String, RepoRun>,
+    pub goal: String,
+    pub default_verify: String,
     pub budget_usd: f64,
     pub initial_cost: f64,
+}
+
+/// The ref an epic's worktree branches from: its repo's integration branch
+/// when a dependency lives in the SAME repo (so it inherits merged work),
+/// otherwise its repo's base ref. Cross-repo deps do not change the base.
+fn epic_base_ref(epic: &Epic, repo_by_id: &HashMap<String, String>, rc: &RepoRun) -> String {
+    let has_same_repo_dep = epic
+        .depends_on
+        .iter()
+        .any(|dep| repo_by_id.get(dep) == Some(&epic.repo));
+    if has_same_repo_dep {
+        rc.integration_branch.clone()
+    } else {
+        rc.base_ref.clone()
+    }
 }
 
 /// Run `verify_cmd` inside a worktree. Returns true on exit code 0.
@@ -180,22 +201,20 @@ async fn run_verify(worktree_path: &std::path::Path, verify_cmd: &str) -> bool {
 /// if it passed (ready to merge), Ok(None) if it failed after retry.
 async fn run_epic(
     epic: &Epic,
-    config: &RunConfig,
+    rc: &RepoRun,
+    base_ref: &str,
+    verify_cmd: &str,
+    goal: &str,
     spent: &Arc<Mutex<f64>>,
     tx: &UnboundedSender<StageEvent>,
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
     for attempt in 0..2 {
-        // A dependency-free epic branches from the configured base ref; a
-        // dependent epic branches from the integration branch, which already
-        // holds its merged deps (an epic only becomes ready after all its deps
-        // have merged).
-        let base_ref = if epic.depends_on.is_empty() {
-            config.base_ref.clone()
-        } else {
-            config.integration_branch.clone()
-        };
-        let wt = worktree::create(&config.repo, &epic.id, &base_ref).await?;
-        let prompt = crate::config::epic_prompt(&config.goal, epic, &config.verify_cmd);
+        // The base ref is resolved by the caller: a dependency-free epic (or
+        // one whose deps live in another repo) branches from its repo's base
+        // ref; an epic with a same-repo dependency branches from the
+        // integration branch, which already holds its merged deps.
+        let wt = worktree::create(&rc.path, &epic.id, base_ref).await?;
+        let prompt = crate::config::epic_prompt(goal, epic, verify_cmd);
         let spec = StageSpec {
             tag: &epic.id,
             cwd: &wt.path,
@@ -214,14 +233,14 @@ async fn run_epic(
         let _ = tx.send(StageEvent::EpicVerifying {
             id: epic.id.clone(),
         });
-        if outcome.ok && run_verify(&wt.path, &config.verify_cmd).await {
+        if outcome.ok && run_verify(&wt.path, verify_cmd).await {
             let _ = tx.send(StageEvent::EpicSucceeded {
                 id: epic.id.clone(),
                 cost: outcome.cost,
             });
             return Ok(Some(wt));
         }
-        let _ = worktree::remove(&config.repo, &wt).await;
+        let _ = worktree::remove(&rc.path, &wt).await;
         if attempt == 0 {
             let _ = tx.send(StageEvent::StageLog {
                 tag: epic.id.clone(),
@@ -246,10 +265,23 @@ pub async fn run(
         .iter()
         .map(|e| (e.id.clone(), e.clone()))
         .collect();
+    let repo_by_id: HashMap<String, String> = plan
+        .epics
+        .iter()
+        .map(|e| (e.id.clone(), e.repo.clone()))
+        .collect();
+    let repo_by_id = Arc::new(repo_by_id);
     let scheduler = Arc::new(Mutex::new(Scheduler::new(plan, config::MAX_PARALLEL_EPICS)));
     let config = Arc::new(config);
     let spent = Arc::new(Mutex::new(config.initial_cost));
-    let merge_lock = Arc::new(Mutex::new(()));
+    // One merge lock per repo. Merges into the same repo's integration branch
+    // must not race, but merges into different repos may proceed in parallel.
+    let merge_locks: HashMap<String, Arc<Mutex<()>>> = config
+        .repos
+        .keys()
+        .map(|name| (name.clone(), Arc::new(Mutex::new(()))))
+        .collect();
+    let merge_locks = Arc::new(merge_locks);
     let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     loop {
@@ -294,19 +326,42 @@ pub async fn run(
             });
             let scheduler = scheduler.clone();
             let config = config.clone();
+            let repo_by_id = repo_by_id.clone();
+            let merge_locks = merge_locks.clone();
             let spent = spent.clone();
             let tx = tx.clone();
-            let merge_lock = merge_lock.clone();
             handles.push(tokio::spawn(async move {
-                match run_epic(&epic, &config, &spent, &tx).await {
+                // Resolve the epic's repo. Validation should guarantee it
+                // exists; fail the epic defensively if it does not.
+                let Some(rc) = config.repos.get(&epic.repo) else {
+                    let _ = tx.send(StageEvent::EpicFailed {
+                        id: epic.id.clone(),
+                        reason: format!("epic names unknown repo {}", epic.repo),
+                    });
+                    let mut sched = scheduler.lock().await;
+                    sched.mark_failed(&epic.id);
+                    for (eid, state) in sched.snapshot() {
+                        if state == EpicState::Skipped {
+                            let _ = tx.send(StageEvent::EpicSkipped { id: eid });
+                        }
+                    }
+                    return;
+                };
+                let base = epic_base_ref(&epic, &repo_by_id, rc);
+                let verify = epic
+                    .verify
+                    .clone()
+                    .unwrap_or_else(|| config.default_verify.clone());
+                match run_epic(&epic, rc, &base, &verify, &config.goal, &spent, &tx).await {
                     Ok(Some(wt)) => {
+                        let merge_lock = merge_locks[&epic.repo].clone();
                         let merged = {
                             let _guard = merge_lock.lock().await;
                             worktree::merge_into(
-                                &config.repo,
+                                &rc.path,
                                 &wt.branch,
-                                &config.integration_branch,
-                                &config.base_ref,
+                                &rc.integration_branch,
+                                &rc.base_ref,
                             )
                             .await
                         };
@@ -320,7 +375,7 @@ pub async fn run(
                                     sched.mark_succeeded(&epic.id);
                                 }
                                 // Remove the worktree only once its work is safely merged.
-                                let _ = worktree::remove(&config.repo, &wt).await;
+                                let _ = worktree::remove(&rc.path, &wt).await;
                             }
                             Ok(MergeResult::Conflict) => {
                                 let _ = tx.send(StageEvent::EpicConflict {
@@ -466,6 +521,58 @@ mod tests {
             sched.mark_succeeded(id);
         }
         assert!(sched.is_done());
+    }
+
+    #[test]
+    fn base_ref_uses_integration_only_for_a_same_repo_dep() {
+        let rc = RepoRun {
+            path: std::path::PathBuf::from("/tmp/x"),
+            base_ref: "main".to_string(),
+            integration_branch: "agentic-integration".to_string(),
+        };
+        let mut repo_by_id = HashMap::new();
+        repo_by_id.insert("a".to_string(), "greentic".to_string());
+        repo_by_id.insert("b".to_string(), "greentic".to_string());
+        repo_by_id.insert("c".to_string(), "billing".to_string());
+
+        // same-repo dependency -> integration
+        let same = Epic {
+            id: "b".into(),
+            title: "B".into(),
+            repo: "greentic".into(),
+            verify: None,
+            depends_on: vec!["a".into()],
+            acceptance: vec![],
+            tasks: vec![],
+        };
+        assert_eq!(
+            epic_base_ref(&same, &repo_by_id, &rc),
+            "agentic-integration"
+        );
+
+        // cross-repo dependency only -> base
+        let cross = Epic {
+            id: "c".into(),
+            title: "C".into(),
+            repo: "billing".into(),
+            verify: None,
+            depends_on: vec!["a".into()],
+            acceptance: vec![],
+            tasks: vec![],
+        };
+        assert_eq!(epic_base_ref(&cross, &repo_by_id, &rc), "main");
+
+        // no dependency -> base
+        let free = Epic {
+            id: "a".into(),
+            title: "A".into(),
+            repo: "greentic".into(),
+            verify: None,
+            depends_on: vec![],
+            acceptance: vec![],
+            tasks: vec![],
+        };
+        assert_eq!(epic_base_ref(&free, &repo_by_id, &rc), "main");
     }
 
     #[test]

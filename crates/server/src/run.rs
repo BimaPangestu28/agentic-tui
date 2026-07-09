@@ -13,7 +13,7 @@ use tokio::task::JoinHandle;
 
 use shared::{App, StageEvent};
 
-use crate::{config, resolve_setting, run_pipeline, workspace, worktree};
+use crate::{config, orchestrator, resolve_setting, run_pipeline, workspace, worktree};
 
 pub use shared::StartRunRequest;
 
@@ -50,7 +50,7 @@ struct RunHandle {
     app: Arc<Mutex<App>>,
     tx: broadcast::Sender<App>,
     task: Option<JoinHandle<()>>,
-    repo: PathBuf,
+    repo_paths: Vec<PathBuf>,
     completed: Arc<AtomicBool>,
 }
 
@@ -115,15 +115,26 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let (tx, _rx) = broadcast::channel::<App>(SNAPSHOT_CHANNEL_CAPACITY);
     let completed = Arc::new(AtomicBool::new(false));
 
+    // Phase A parity: build a one-repo map keyed by the workspace name, so the
+    // multi-repo orchestrator runs a single repo exactly as before.
+    let mut repos = HashMap::new();
+    repos.insert(
+        workspace_name.clone(),
+        orchestrator::RepoRun {
+            path: repo.clone(),
+            base_ref,
+            integration_branch: integration,
+        },
+    );
+
     let task = spawn_pipeline(
         app.clone(),
         tx.clone(),
         completed.clone(),
         repo.clone(),
+        repos,
         req.goal,
         verify_cmd,
-        base_ref,
-        integration,
         req.refine_cost,
     );
 
@@ -135,7 +146,7 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
             app,
             tx,
             task: Some(task),
-            repo,
+            repo_paths: vec![repo],
             completed,
         },
     );
@@ -152,11 +163,10 @@ fn spawn_pipeline(
     app: Arc<Mutex<App>>,
     tx: broadcast::Sender<App>,
     completed: Arc<AtomicBool>,
-    repo: PathBuf,
+    plan_cwd: PathBuf,
+    repos: HashMap<String, orchestrator::RepoRun>,
     goal: String,
-    verify_cmd: String,
-    base_ref: String,
-    integration: String,
+    default_verify: String,
     refine_cost: f64,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -164,11 +174,10 @@ fn spawn_pipeline(
 
         let pipeline_fut = async move {
             if let Err(e) = run_pipeline(
-                &repo,
+                &plan_cwd,
+                repos,
                 &goal,
-                &verify_cmd,
-                &base_ref,
-                &integration,
+                &default_verify,
                 refine_cost,
                 &pipeline_tx,
             )
@@ -220,13 +229,13 @@ pub async fn abort(id: &str) {
                     handle.task.take(),
                     handle.app.clone(),
                     handle.tx.clone(),
-                    handle.repo.clone(),
+                    handle.repo_paths.clone(),
                 ))
             }
             _ => None,
         }
     };
-    let Some((task, app, tx, repo)) = target else {
+    let Some((task, app, tx, repo_paths)) = target else {
         return;
     };
 
@@ -248,10 +257,15 @@ pub async fn abort(id: &str) {
         let _ = tx.send(app.clone());
     }
 
-    // Phase 4: clean up epic worktrees now that no child process can still
-    // be touching them.
-    if let Err(e) = worktree::cleanup_all(&repo).await {
-        eprintln!("warning: could not clean up worktrees after abort: {e}");
+    // Phase 4: clean up epic worktrees in every repo the run targeted, now
+    // that no child process can still be touching them.
+    for repo in repo_paths {
+        if let Err(e) = worktree::cleanup_all(&repo).await {
+            eprintln!(
+                "warning: could not clean up worktrees for {}: {e}",
+                repo.display()
+            );
+        }
     }
 }
 
@@ -270,12 +284,16 @@ pub async fn subscribe(id: &str) -> Option<(App, broadcast::Receiver<App>)> {
     Some((snapshot, tx.subscribe()))
 }
 
+/// One run's metadata snapshotted under the RUNS lock: id, workspace name,
+/// the repo paths it targets, and a handle to its live `App`.
+type RunSnapshot = (String, String, Vec<PathBuf>, Arc<Mutex<App>>);
+
 /// A snapshot of every run started this session (active and finished),
 /// sorted by id, for the multi-run dashboard.
 pub async fn list() -> Vec<shared::RunSummary> {
     // Phase 1: snapshot the per-run metadata + app handles under the RUNS
     // lock.
-    let handles: Vec<(String, String, PathBuf, Arc<Mutex<App>>)> = {
+    let handles: Vec<RunSnapshot> = {
         let mut guard = RUNS.lock().await;
         let runs = guard.get_or_insert_with(HashMap::new);
         runs.values()
@@ -283,7 +301,7 @@ pub async fn list() -> Vec<shared::RunSummary> {
                 (
                     h.id.clone(),
                     h.workspace.clone(),
-                    h.repo.clone(),
+                    h.repo_paths.clone(),
                     h.app.clone(),
                 )
             })
@@ -292,20 +310,19 @@ pub async fn list() -> Vec<shared::RunSummary> {
     // Phase 2: build summaries by locking each app briefly, RUNS already
     // released.
     let mut out = Vec::with_capacity(handles.len());
-    for (id, workspace, repo, app) in handles {
+    for (id, workspace, repo_paths, app) in handles {
         let app = app.lock().await;
-        let mut repos: Vec<String> = app
-            .epics
-            .iter()
-            .map(|epic| epic.repo.clone())
-            .filter(|repo| !repo.is_empty())
-            .collect();
-        repos.sort();
-        repos.dedup();
+        // The run's repos come from its config, not the epics. In Phase A a
+        // run always targets the single workspace repo.
+        let repos = vec![workspace.clone()];
+        let path = repo_paths
+            .first()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_default();
         out.push(shared::RunSummary {
             id,
             workspace,
-            path: repo.to_string_lossy().to_string(),
+            path,
             goal: app.goal.clone(),
             phase: app.phase,
             total_cost: app.total_cost,

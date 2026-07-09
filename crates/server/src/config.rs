@@ -39,26 +39,40 @@ pub const DEFAULT_VERIFY_CMD: &str = "make verify";
 
 /// Prompt for the Plan stage. Claude explores the workspace and writes a
 /// machine-readable plan.json (epics with tasks, dependencies, acceptance).
-pub fn plan_prompt(goal: &str, out_path: &str) -> String {
+/// `repos` lists each target repo as `(name, absolute path)`; every epic must
+/// name exactly one of them.
+pub fn plan_prompt(goal: &str, out_path: &str, repos: &[(String, String)]) -> String {
+    let repos_block: String = repos
+        .iter()
+        .map(|(name, path)| format!("- {name}: {path}\n"))
+        .collect();
     format!(
-        "You are a Tech Lead decomposing a goal into an implementation plan for a \
-repository. {style}\n\n\
+        "You are a Tech Lead decomposing a goal into an implementation plan across \
+the repositories below. {style}\n\n\
 GOAL:\n{goal}\n\n\
-Step 1. Understand this repository with Glob and Grep. Detect language, \
+REPOS:\n{repos}\n\
+Step 1. Understand each repository with Glob and Grep. Detect language, \
 framework, layout, and conventions so the plan fits the real code.\n\
 Step 2. Break the goal into epics. Each epic is a coherent unit one engineer \
-can implement in one session. Split each epic into concrete tasks. Record \
-dependencies between epics with epic ids in depends_on. Keep epics as \
-independent as possible so they can run in parallel.\n\
+can implement in one session. Assign every epic to exactly one repo from the \
+list above with its \"repo\" field. Split each epic into concrete tasks. Record \
+dependencies between epics with epic ids in depends_on. A dependency may name \
+an epic in another repo; that only orders the work, since code is not shared \
+across repos. Keep epics as independent as possible so they can run in \
+parallel.\n\
 Step 3. Write ONLY a JSON file to {out} with this exact shape and nothing else:\n\
-{{\"epics\":[{{\"id\":\"epic-1\",\"title\":\"...\",\"depends_on\":[],\
+{{\"epics\":[{{\"id\":\"epic-1\",\"title\":\"...\",\"repo\":\"<repo name>\",\
+\"verify\":\"<verify command>\",\"depends_on\":[],\
 \"acceptance\":[\"verifiable item\"],\"tasks\":[{{\"id\":\"epic-1-t1\",\
 \"title\":\"...\",\"detail\":\"...\"}}]}}]}}\n\
-Use short kebab-case ids. Every depends_on entry must be an id that exists. Do \
-not create cycles. Do not write any other file.\n\
+Use short kebab-case ids. Set \"repo\" to one of the listed repo names. Choose \
+a \"verify\" command appropriate to that repo's toolchain. Every depends_on \
+entry must be an id that exists. Do not create cycles. Do not write any other \
+file.\n\
 Step 4. After writing, print the number of epics and a one line summary.",
         style = STYLE,
         goal = goal,
+        repos = repos_block,
         out = out_path,
     )
 }
