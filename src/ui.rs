@@ -59,6 +59,71 @@ pub fn render_goal_input(f: &mut Frame, workspace: &str, buffer: &str) {
     f.render_widget(input, rows[0]);
 }
 
+/// Status frame shown while a refine pass runs.
+pub fn render_refining(f: &mut Frame, note: &str) {
+    let area = f.area();
+    let message = Paragraph::new(format!("Refining the goal: {note}..."))
+        .wrap(Wrap { trim: true })
+        .block(Block::default().borders(Borders::ALL).title(" Refine "));
+    f.render_widget(message, area);
+}
+
+/// One clarifying question with an editable answer field.
+pub fn render_refine_question(
+    f: &mut Frame,
+    question: &str,
+    index: usize,
+    total: usize,
+    answer: &str,
+) {
+    let area = f.area();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Length(3),
+            Constraint::Min(0),
+        ])
+        .split(area);
+    let prompt = Paragraph::new(question.to_string())
+        .wrap(Wrap { trim: true })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!(" Question {index} of {total} ")),
+        );
+    f.render_widget(prompt, rows[0]);
+    let input = Paragraph::new(Line::from(vec![
+        Span::raw(answer.to_string()),
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Answer (Enter next, empty to skip, Esc to skip refining) "),
+    );
+    f.render_widget(input, rows[1]);
+}
+
+/// The final refined goal in an editable field, confirmed before planning.
+pub fn render_goal_confirm(f: &mut Frame, goal: &str) {
+    let area = f.area();
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(3), Constraint::Min(0)])
+        .split(area);
+    let input = Paragraph::new(Line::from(vec![
+        Span::raw(goal.to_string()),
+        Span::styled("\u{2588}", Style::default().fg(Color::Cyan)),
+    ]))
+    .block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Final goal (edit if needed, Enter to plan, Esc to use original) "),
+    );
+    f.render_widget(input, rows[0]);
+}
+
 /// Onboarding screen one: an editable path to scan for git repositories.
 pub fn render_scan_root_input(f: &mut Frame, root: &str) {
     let area = f.area();

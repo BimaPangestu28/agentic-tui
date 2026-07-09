@@ -13,4 +13,5 @@
 
 # Orchestrator scratch state
 /.agentic-plan.json
+/.agentic-refine.json
 /.agentic-worktrees/
