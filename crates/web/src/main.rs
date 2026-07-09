@@ -4,18 +4,13 @@
 
 mod api;
 mod views;
+mod ws;
 
 use leptos::prelude::*;
 use leptos_router::components::{Route, Router, Routes};
 use leptos_router::path;
 
-use views::{NewRun, Workspaces};
-
-/// Placeholder for the run dashboard, wired up in a later task.
-#[component]
-fn Run() -> impl IntoView {
-    view! { <h1>"Run"</h1> }
-}
+use views::{NewRun, Run, Workspaces};
 
 #[component]
 fn App() -> impl IntoView {

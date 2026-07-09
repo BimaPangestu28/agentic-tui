@@ -97,6 +97,20 @@ pub async fn refine_questions(repo: &str, goal: &str) -> Result<RefineQuestionsR
     into_result(response).await
 }
 
+/// `POST /api/runs/{id}/abort` -> stops the active run. Takes no body.
+pub async fn abort_run(id: &str) -> Result<(), String> {
+    let response = Request::post(&format!("/api/runs/{id}/abort"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to reach the abort endpoint: {err}"))?;
+    if !response.ok() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("abort failed with status {status}: {body}"));
+    }
+    Ok(())
+}
+
 /// `POST /api/refine/finalize` -> the final refined goal folding in the
 /// user's answers, and the cost incurred by this pass.
 pub async fn refine_finalize(
