@@ -143,7 +143,7 @@ already merged stay merged on the integration branch. When the run ends, the
 dashboard shows a final report: one line per epic with its final status
 (merged, failed, skipped, or conflict) and the total cost.
 
-## Config knobs (`src/config.rs`)
+## Config knobs (`crates/server/src/config.rs`)
 
 - `MODEL_PLAN` and `MODEL_EPIC` select which model runs each stage. Plan
   defaults to `opus` because plan quality drives every epic's accuracy. Epics

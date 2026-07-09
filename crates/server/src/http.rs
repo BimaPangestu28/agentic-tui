@@ -1,7 +1,7 @@
 //! Embedded web UI server. Serves the Leptos CSR app built by `trunk` into
 //! `crates/web/dist` from memory, so the binary stays self-contained with no
-//! separate static-file deployment step. Reached only behind the `--web`
-//! flag; the TUI remains the default entry point.
+//! separate static-file deployment step. This is the default and only UI: the
+//! binary starts this server and opens the browser.
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
