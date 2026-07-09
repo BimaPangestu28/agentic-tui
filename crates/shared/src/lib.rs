@@ -95,8 +95,8 @@ pub enum StageEvent {
     EpicSkipped { id: String },
     EpicMerged { id: String },
     EpicConflict { id: String },
-    Cost(f64),
-    Fatal(String),
+    Cost { total: f64 },
+    Fatal { reason: String },
     Done,
 }
 
@@ -228,11 +228,11 @@ impl App {
                 self.set_status(&id, EpicStatus::Conflict);
                 self.push_log(format!("epic {id} merge conflict, needs manual merge"));
             }
-            StageEvent::Cost(c) => self.total_cost = c,
-            StageEvent::Fatal(s) => {
+            StageEvent::Cost { total } => self.total_cost = total,
+            StageEvent::Fatal { reason } => {
                 self.phase = Phase::Failed;
-                self.error = Some(s.clone());
-                self.push_log(format!("! FATAL: {s}"));
+                self.error = Some(reason.clone());
+                self.push_log(format!("! FATAL: {reason}"));
             }
             StageEvent::Done => {
                 if self.phase != Phase::Failed {
@@ -309,5 +309,26 @@ mod tests {
         assert!(app.epics.iter().all(|e| e.status == EpicStatus::Pending));
         let b = app.epics.iter().find(|e| e.id == "b").unwrap();
         assert_eq!(b.depends_on, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn stage_events_round_trip_through_json() {
+        let events = vec![
+            StageEvent::Cost { total: 1.5 },
+            StageEvent::Fatal {
+                reason: "boom".to_string(),
+            },
+            StageEvent::StageLog {
+                tag: "plan".to_string(),
+                line: "hi".to_string(),
+            },
+            StageEvent::Done,
+        ];
+        for event in events {
+            let json = serde_json::to_string(&event).expect("StageEvent must serialize");
+            let back: StageEvent =
+                serde_json::from_str(&json).expect("StageEvent must deserialize");
+            assert_eq!(format!("{event:?}"), format!("{back:?}"));
+        }
     }
 }

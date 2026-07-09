@@ -210,7 +210,7 @@ async fn run_epic(
         {
             let mut total = spent.lock().await;
             *total += outcome.cost;
-            let _ = tx.send(AppEvent::Stage(StageEvent::Cost(*total)));
+            let _ = tx.send(AppEvent::Stage(StageEvent::Cost { total: *total }));
         }
         let _ = tx.send(AppEvent::Stage(StageEvent::EpicVerifying {
             id: epic.id.clone(),
