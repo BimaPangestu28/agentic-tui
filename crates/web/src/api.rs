@@ -112,6 +112,22 @@ pub async fn abort_run(id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `POST /api/runs/{run_id}/epics/{epic_id}/retry` -> re-run one blocked epic.
+/// Returns the server's error message text on a 400/404/409 so the caller can
+/// show it inline. Takes no body.
+pub async fn retry_epic(run_id: &str, epic_id: &str) -> Result<(), String> {
+    let response = Request::post(&format!("/api/runs/{run_id}/epics/{epic_id}/retry"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to reach the retry endpoint: {err}"))?;
+    if !response.ok() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("retry failed with status {status}: {body}"));
+    }
+    Ok(())
+}
+
 /// `GET /api/runs` -> every run started this session (active and finished),
 /// used by the app-bar runs-switcher and the dashboard.
 pub async fn list_runs() -> Result<Vec<RunSummary>, String> {

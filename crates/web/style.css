@@ -433,16 +433,20 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
    ============================================================================ */
 .workspaces-view { display: flex; flex-direction: column; gap: var(--sp-6); }
 
+/* Four-across card grid; collapses to fewer columns as the viewport narrows. */
 .workspace-list {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--sp-3);
+}
+
+.workspace-card { display: flex; }
+/* the anchor is the whole card surface so the entire tile is clickable */
+.workspace-card > a {
   display: flex;
   flex-direction: column;
   gap: var(--sp-2);
-}
-
-.workspace-row {
-  display: flex;
-  align-items: center;
-  gap: var(--sp-4);
+  width: 100%;
   padding: var(--sp-4);
   background: var(--bg-1);
   border: 1px solid var(--border);
@@ -453,26 +457,24 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   transition: border-color 0.12s ease, background 0.12s ease, transform 0.05s ease;
   box-shadow: var(--hairline-top);
 }
-.workspace-row:hover {
+.workspace-card > a:hover {
   border-color: var(--accent-line);
   background: var(--bg-2);
 }
-.workspace-row:focus-visible { outline: none; box-shadow: var(--focus-ring); }
-/* leading hexagon marker + trailing chevron */
-.workspace-row::before {
-  content: "\2B21";                 /* ⬡ */
+.workspace-card > a:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+
+/* card header: leading hexagon marker + workspace name */
+.ws-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.ws-card-hex {
   color: var(--accent);
   font-size: 15px;
   opacity: 0.85;
+  flex-shrink: 0;
 }
-.workspace-row::after {
-  content: "\203A";                 /* › */
-  margin-left: auto;
-  color: var(--text-dim);
-  font-size: 20px;
-  transition: transform 0.12s ease, color 0.12s ease;
-}
-.workspace-row:hover::after { transform: translateX(3px); color: var(--text-muted); }
 
 .workspace-name {
   font-weight: 600;
@@ -483,10 +485,9 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   color: var(--text-dim);
-  margin-left: var(--sp-3);
+  /* full paths are long; wrap inside the card rather than overflow it */
+  word-break: break-all;
 }
-/* stack name/path on one row with mono path trailing; allow wrap on narrow */
-.workspace-row > .workspace-name + .workspace-path { margin-left: var(--sp-3); }
 
 /* Empty state */
 .workspace-list:empty { display: none; }
@@ -774,50 +775,18 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   align-items: center;
 }
 
-/* ---- Budget meter ------------------------------------------------------ */
-.budget {
+/* ---- Run cost readout --------------------------------------------------- */
+.run-cost {
   grid-column: 1 / -1;
   display: flex;
-  flex-direction: column;
-  gap: var(--sp-2);
-}
-.budget-text {
+  align-items: baseline;
+  gap: 6px;
   font-family: var(--font-mono);
   font-size: var(--fs-sm);
   color: var(--text-muted);
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
 }
-.budget-text .spent { color: var(--text); font-weight: 600; }
-.budget-bar {
-  position: relative;
-  height: 9px;
-  background: var(--bg-3);
-  border-radius: var(--r-full);
-  overflow: hidden;
-  box-shadow: inset 0 1px 2px rgba(0,0,0,0.35);
-}
-.budget-bar-fill {
-  height: 100%;
-  width: 0%;
-  border-radius: var(--r-full);
-  background: linear-gradient(90deg, var(--accent-press), var(--accent));
-  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-  position: relative;
-}
-/* soft moving shimmer while running */
-.budget-bar-fill::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  background: linear-gradient(90deg, transparent,
-              rgba(255,255,255,0.18), transparent);
-  transform: translateX(-100%);
-  animation: budget-shimmer 2.2s ease-in-out infinite;
-}
-/* near/over budget warning */
-.budget-bar-fill.warn { background: linear-gradient(90deg, #C9711F, var(--danger)); }
+.run-cost .spent { color: var(--text); font-weight: 600; }
+.run-cost-label { color: var(--text-dim); }
 
 /* ---- Kanban board ------------------------------------------------------ */
 .kanban-board {
@@ -915,17 +884,19 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   display: flex;
   align-items: center;
   gap: var(--sp-2);
-  justify-content: space-between;
+  flex-wrap: wrap;
 }
 .kanban-card-id {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--text-dim);
+  white-space: nowrap;
 }
 .kanban-card-repo {
   font-family: var(--font-mono);
   font-size: var(--fs-xs);
   color: var(--text-dim);
+  white-space: nowrap;
 }
 .kanban-card-status {
   display: inline-flex;
@@ -939,6 +910,8 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   color: var(--text-muted);
   background: var(--bg-1);
   white-space: nowrap;
+  flex-shrink: 0;
+  margin-left: auto;
 }
 .kanban-card-status::before { font-size: 10px; line-height: 1; }
 
@@ -985,6 +958,42 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   align-self: flex-start;
 }
 .kanban-card-hold::before { content: "\23F8"; }   /* ⏸ */
+
+/* blocked-epic reason: why a Failed/Skipped/Conflict card is stuck */
+.kanban-card-reason {
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--st-block);
+  background: var(--st-block-soft);
+  border: 1px solid var(--st-block-line);
+  border-radius: var(--r-sm);
+  padding: 5px 8px;
+}
+/* retry action row on a blocked card */
+.kanban-card-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+.btn-retry {
+  font-family: inherit;
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  color: var(--text);
+  background: var(--bg-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--r-sm);
+  padding: 3px 12px;
+  cursor: pointer;
+  transition: background 0.12s ease, border-color 0.12s ease, color 0.12s ease;
+}
+.btn-retry:hover { background: var(--st-block-soft); border-color: var(--st-block-line); color: var(--st-block); }
+.btn-retry:disabled { opacity: 0.6; cursor: default; }
+.btn-retry:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.kanban-card-error {
+  font-size: var(--fs-xs);
+  line-height: 1.4;
+  color: var(--danger);
+}
 
 /* ---- Live log pane ----------------------------------------------------- */
 .log-pane {
@@ -1137,10 +1146,6 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
 @keyframes pulse-dot {
   0%, 100% { opacity: 1; transform: scale(1); }
   50%      { opacity: 0.4; transform: scale(0.8); }
-}
-@keyframes budget-shimmer {
-  0%   { transform: translateX(-100%); }
-  60%, 100% { transform: translateX(200%); }
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 @keyframes log-flash {
@@ -1372,8 +1377,6 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   gap: var(--sp-4);
 }
 .run-card .rc-right .run-phase { justify-self: start; }
-.run-card .rc-right .rc-budget { display: flex; flex-direction: column; gap: 5px; }
-.run-card .rc-right .budget-bar { width: 128px; height: 6px; }
 .run-card .mini-budget { font-family: var(--font-mono); font-size: var(--fs-xs); color: var(--text-muted); }
 
 /* phase badge */
@@ -1409,6 +1412,8 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   .run-header .run-actions { grid-row: auto; grid-column: 1; justify-content: flex-start; }
   /* board keeps its columns and scrolls horizontally */
   .kanban-column { min-width: 240px; flex: 0 0 240px; }
+  /* workspace cards drop to two across on tablet widths */
+  .workspace-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   /* overview stacks: stats above, distribution below */
   .overview-card { grid-template-columns: 1fr; gap: var(--sp-5); }
   .overview-divider { display: none; }
@@ -1420,12 +1425,10 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
 @media (max-width: 560px) {
   :root { --fs-2xl: 24px; --fs-xl: 20px; }
   .app-bar { padding: 0 var(--sp-4); }
-  .workspace-row { flex-wrap: wrap; }
-  .workspace-path { margin-left: 0; width: 100%; }
+  .workspace-list { grid-template-columns: 1fr; }
   .add-workspace-panel .scan-row { flex-direction: column; }
-  /* run card: hide the mini budget bar, keep phase + amount */
+  /* run card: keep phase + amount stacked */
   .run-card .rc-right { grid-template-columns: auto; gap: var(--sp-2); justify-items: end; }
-  .run-card .rc-right .budget-bar { display: none; }
   .run-card .rc-meta { display: none; }
   .overview-stats { flex-wrap: wrap; gap: var(--sp-5); }
   .report-row { grid-template-columns: 1fr auto; grid-template-areas: "id cost" "title status"; row-gap: var(--sp-1); }

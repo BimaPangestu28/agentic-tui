@@ -49,7 +49,6 @@ async fn run_refine_pass(
         model: config::MODEL_REFINE,
         tools: config::REFINE_TOOLS,
         max_turns: config::REFINE_MAX_TURNS,
-        budget_usd: config::REFINE_BUDGET_USD,
         prompt,
     };
     let outcome = match engine::run_stage(&spec, tx).await {

@@ -155,6 +155,7 @@ impl Scheduler {
 
 /// One repository a run targets: where it lives, the ref its epics branch
 /// from, and the branch their work merges into.
+#[derive(Clone)]
 pub struct RepoRun {
     pub path: PathBuf,
     pub base_ref: String,
@@ -165,7 +166,6 @@ pub struct RunConfig {
     pub repos: HashMap<String, RepoRun>,
     pub goal: String,
     pub default_verify: String,
-    pub budget_usd: f64,
     pub initial_cost: f64,
 }
 
@@ -221,7 +221,6 @@ async fn run_epic(
             model: crate::config::MODEL_EPIC,
             tools: crate::config::EPIC_TOOLS,
             max_turns: crate::config::EPIC_MAX_TURNS,
-            budget_usd: crate::config::EPIC_BUDGET_USD,
             prompt: &prompt,
         };
         let outcome = engine::run_stage(&spec, tx).await?;
@@ -253,8 +252,8 @@ async fn run_epic(
 
 /// Drive the whole Implement + Integrate flow. Schedules epics respecting
 /// dependencies and the parallel cap, verifies each, and merges passing epics
-/// into the integration branch in the order they finish. Stops starting new
-/// epics once the global budget is reached.
+/// into the integration branch in the order they finish. Each stage is bounded
+/// by its turn cap (`--max-turns`); there is no cost budget.
 pub async fn run(
     plan: &Plan,
     config: RunConfig,
@@ -285,29 +284,18 @@ pub async fn run(
     let mut handles: Vec<tokio::task::JoinHandle<()>> = Vec::new();
 
     loop {
-        let over_budget = *spent.lock().await >= config.budget_usd;
         let ready = {
             let sched = scheduler.lock().await;
             if sched.is_done() {
                 break;
             }
-            if over_budget {
-                Vec::new()
-            } else {
-                sched.next_ready()
-            }
+            sched.next_ready()
         };
 
         if ready.is_empty() {
             if let Some(handle) = handles.pop() {
                 let _ = handle.await;
             } else {
-                if over_budget {
-                    let _ = tx.send(StageEvent::StageLog {
-                        tag: "orchestrator".to_string(),
-                        line: "global budget reached, not starting new epics".to_string(),
-                    });
-                }
                 break;
             }
             continue;
@@ -427,6 +415,97 @@ pub async fn run(
         let _ = handle.await;
     }
     let _ = tx.send(StageEvent::Done);
+    Ok(())
+}
+
+/// Re-run one epic that ended blocked (verify failed, merge conflict, or an
+/// error) and merge it, reusing the same worktree, session, verify, and merge
+/// path a normal epic takes. Emits the same lifecycle events (`EpicStarted`
+/// through `EpicMerged`/`EpicConflict`/`EpicFailed`) so the UI updates the
+/// card in place. `initial_cost` seeds the accumulated cost so the `Cost`
+/// events this retry emits stay monotonic with the finished run's total.
+///
+/// Unlike `run`, this touches a single epic with no scheduler and no merge
+/// lock, since nothing else is running. It does not emit `Done`; the caller
+/// detects completion when the event channel closes.
+pub async fn retry_epic(
+    plan: &Plan,
+    epic_id: &str,
+    repos: &HashMap<String, RepoRun>,
+    goal: &str,
+    default_verify: &str,
+    initial_cost: f64,
+    tx: UnboundedSender<StageEvent>,
+) -> anyhow::Result<()> {
+    let epic = plan
+        .epics
+        .iter()
+        .find(|candidate| candidate.id == epic_id)
+        .ok_or_else(|| anyhow::anyhow!("epic {epic_id} is not in the plan"))?;
+    let repo_by_id: HashMap<String, String> = plan
+        .epics
+        .iter()
+        .map(|e| (e.id.clone(), e.repo.clone()))
+        .collect();
+    let Some(rc) = repos.get(&epic.repo) else {
+        let _ = tx.send(StageEvent::EpicFailed {
+            id: epic.id.clone(),
+            reason: format!("epic names unknown repo {}", epic.repo),
+        });
+        return Ok(());
+    };
+
+    let base = epic_base_ref(epic, &repo_by_id, rc);
+    let verify = epic
+        .verify
+        .clone()
+        .unwrap_or_else(|| default_verify.to_string());
+    let spent = Arc::new(Mutex::new(initial_cost));
+
+    let _ = tx.send(StageEvent::EpicStarted {
+        id: epic.id.clone(),
+        title: epic.title.clone(),
+        repo: epic.repo.clone(),
+    });
+
+    match run_epic(epic, rc, &base, &verify, goal, &spent, &tx).await {
+        Ok(Some(wt)) => {
+            let merged =
+                worktree::merge_into(&rc.path, &wt.branch, &rc.integration_branch, &rc.base_ref)
+                    .await;
+            match merged {
+                Ok(MergeResult::Merged) => {
+                    let _ = tx.send(StageEvent::EpicMerged {
+                        id: epic.id.clone(),
+                    });
+                    let _ = worktree::remove(&rc.path, &wt).await;
+                }
+                Ok(MergeResult::Conflict) => {
+                    let _ = tx.send(StageEvent::EpicConflict {
+                        id: epic.id.clone(),
+                    });
+                }
+                Err(e) => {
+                    let _ = tx.send(StageEvent::EpicFailed {
+                        id: epic.id.clone(),
+                        reason: e.to_string(),
+                    });
+                }
+            }
+        }
+        Ok(None) => {
+            let _ = tx.send(StageEvent::EpicFailed {
+                id: epic.id.clone(),
+                reason: "verify failed after retry".to_string(),
+            });
+        }
+        Err(e) => {
+            let _ = tx.send(StageEvent::EpicFailed {
+                id: epic.id.clone(),
+                reason: e.to_string(),
+            });
+        }
+    }
     Ok(())
 }
 
