@@ -1,6 +1,9 @@
 # Rust build artifacts
 /target
 
+# Trunk build output for the web crate (rebuilt from source, embedded by the server)
+/crates/web/dist
+
 # Generated PRD output (runtime artifacts, not source)
 /docs/prd/
 

@@ -1,3 +1,9 @@
 [workspace]
-members = ["crates/server", "crates/shared"]
+members = ["crates/server", "crates/shared", "crates/web"]
+# `web` is a wasm32-only crate built with trunk. It is a workspace member so
+# `cargo check -p web --target wasm32-unknown-unknown` and `trunk build` work
+# from the workspace, but it is excluded from `default-members` so that bare
+# `cargo build` / `cargo test` / `cargo clippy --all-targets` (as run by
+# `make verify`) do not try to compile it for the host target.
+default-members = ["crates/server", "crates/shared"]
 resolver = "2"

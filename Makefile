@@ -3,6 +3,13 @@
 # Common targets for building, running, and checking the project.
 # Override GOAL and WORKSPACE when running the tool, e.g.:
 #   make run GOAL="Add a health check endpoint" WORKSPACE=greentic
+#
+# The `web` crate (crates/web) is a wasm32-only Leptos app built with trunk.
+# It is excluded from the workspace default-members, so plain `make build`,
+# `make test`, and `make verify` do not touch it. The server embeds its
+# `dist/` output via rust-embed, so on a fresh clone run `make web` once
+# before building the server with `--web` support; without a `dist/`
+# directory the server crate fails to compile.
 
 CARGO ?= cargo
 BIN   := agentic-tui
@@ -53,6 +60,14 @@ test: ## Run the test suite
 
 .PHONY: verify
 verify: fmt-check lint test ## Run formatting, lint, and test checks
+
+.PHONY: web
+web: ## Build the Leptos web UI with trunk (required once before the server can embed it)
+	cd crates/web && trunk build
+
+.PHONY: web-check
+web-check: ## Type-check the web crate for its wasm32 target
+	$(CARGO) check -p web --target wasm32-unknown-unknown
 
 .PHONY: clean
 clean: ## Remove build artifacts

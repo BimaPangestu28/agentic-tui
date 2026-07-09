@@ -4,10 +4,14 @@
 //!
 //! Usage:
 //!   cargo run -- ["<goal>"] [--workspace <name|path>] [--verify "<cmd>"] [--base <ref>] [--into <branch>] [--no-refine]
+//!   cargo run -- --web [--no-open]
 //!
 //! The goal is optional; if omitted it is typed in the TUI after the workspace
 //! is chosen. Unless `--no-refine` is passed, the goal runs through a
 //! clarifying refine pass before planning starts.
+//!
+//! `--web` serves the embedded Leptos web UI instead of running the TUI; the
+//! TUI stays the default entry point.
 //!
 //! Prerequisites: the Claude Code CLI on PATH, a subscription login, and git.
 
@@ -15,6 +19,7 @@ mod app;
 mod config;
 mod engine;
 mod event;
+mod http;
 mod orchestrator;
 mod plan;
 mod refine;
@@ -44,6 +49,8 @@ struct Args {
     no_refine: bool,
     base: Option<String>,
     into: Option<String>,
+    web: bool,
+    no_open: bool,
 }
 
 fn parse_args() -> Option<Args> {
@@ -54,6 +61,8 @@ fn parse_args() -> Option<Args> {
     let mut no_refine = false;
     let mut base = None;
     let mut into = None;
+    let mut web = false;
+    let mut no_open = false;
     let mut i = 0;
     while i < raw.len() {
         match raw[i].as_str() {
@@ -74,6 +83,8 @@ fn parse_args() -> Option<Args> {
                 into = raw.get(i).cloned();
             }
             "--no-refine" => no_refine = true,
+            "--web" => web = true,
+            "--no-open" => no_open = true,
             other => goal_parts.push(other.to_string()),
         }
         i += 1;
@@ -86,6 +97,8 @@ fn parse_args() -> Option<Args> {
         no_refine,
         base,
         into,
+        web,
+        no_open,
     })
 }
 
@@ -307,11 +320,15 @@ async fn main() -> anyhow::Result<()> {
         Some(a) => a,
         None => {
             eprintln!(
-                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"] [--base <ref>] [--into <branch>] [--no-refine]"
+                "usage: agentic-tui [\"<goal>\"] [--workspace <name|path>] [--verify \"<cmd>\"] [--base <ref>] [--into <branch>] [--no-refine]\n       agentic-tui --web [--no-open]"
             );
             std::process::exit(1);
         }
     };
+
+    if args.web {
+        return http::serve(!args.no_open).await;
+    }
 
     let workspaces =
         workspace::load_workspaces(&workspace::default_config_path()).unwrap_or_default();
