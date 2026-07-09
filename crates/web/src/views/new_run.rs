@@ -239,78 +239,113 @@ pub fn NewRun() -> impl IntoView {
         view! {
             <div class="new-run-form">
                 {error.map(|msg| view! { <p class="error">{msg}</p> })}
-                <label class="field">
-                    "Goal"
+                <div class="field goal">
+                    <label>"Goal"</label>
                     <textarea
                         rows="6"
+                        placeholder="Describe what you want built..."
                         prop:value=move || goal_input.get()
                         on:input=move |ev| goal_input.set(event_target_value(&ev))
                     ></textarea>
-                </label>
-                <label class="field">
-                    "Base branch"
-                    <input
-                        type="text"
-                        prop:value=move || base_input.get()
-                        on:input=move |ev| base_input.set(event_target_value(&ev))
-                    />
-                </label>
-                <label class="field">
-                    "Integration branch"
-                    <input
-                        type="text"
-                        prop:value=move || into_input.get()
-                        on:input=move |ev| into_input.set(event_target_value(&ev))
-                    />
-                </label>
-                <label class="field">
-                    "Verify command"
-                    <input
-                        type="text"
-                        prop:value=move || verify_input.get()
-                        on:input=move |ev| verify_input.set(event_target_value(&ev))
-                    />
-                </label>
+                    <p class="hint">
+                        "Claude Code breaks this into epics, then runs each one in its own git worktree."
+                    </p>
+                </div>
+
+                <div class="field-group">
+                    <div class="field-group-title">"Advanced options"</div>
+                    <div class="field full">
+                        <label>"Base branch"</label>
+                        <input
+                            type="text"
+                            placeholder="HEAD"
+                            prop:value=move || base_input.get()
+                            on:input=move |ev| base_input.set(event_target_value(&ev))
+                        />
+                    </div>
+                    <div class="field full">
+                        <label>"Integration branch"</label>
+                        <input
+                            type="text"
+                            placeholder="agentic-integration"
+                            prop:value=move || into_input.get()
+                            on:input=move |ev| into_input.set(event_target_value(&ev))
+                        />
+                    </div>
+                    <div class="field full">
+                        <label>"Verify command"</label>
+                        <input
+                            type="text"
+                            placeholder="make verify"
+                            prop:value=move || verify_input.get()
+                            on:input=move |ev| verify_input.set(event_target_value(&ev))
+                        />
+                    </div>
+                </div>
+
                 <label class="field checkbox">
                     <input
                         type="checkbox"
                         prop:checked=move || refine_enabled.get()
                         on:change=move |_| refine_enabled.update(|value| *value = !*value)
                     />
-                    "Refine the goal before planning"
+                    "Refine before planning"
+                    <span class="hint">"Ask clarifying questions first"</span>
                 </label>
-                <button type="button" class="btn-primary" on:click=on_start.clone()>
-                    {move || {
-                        if refine_enabled.get() {
-                            "Refine & plan"
-                        } else {
-                            "Plan"
-                        }
-                    }}
-                </button>
+
+                <div class="new-run-actions">
+                    <button type="button" class="btn-primary" on:click=on_start.clone()>
+                        {move || {
+                            if refine_enabled.get() { "Refine & plan" } else { "Start run" }
+                        }}
+                    </button>
+                </div>
             </div>
         }
     };
 
     view! {
         <div class="new-run-view">
-            <h1>"New run"</h1>
+            <div class="page-head">
+                <h1>"New run"</h1>
+                {move || {
+                    workspace
+                        .get()
+                        .map(|ws| {
+                            view! {
+                                <p class="sub">
+                                    "Workspace " <strong>{ws.name.clone()}</strong> " \u{00b7} "
+                                    <span class="mono">{ws.path.clone()}</span>
+                                </p>
+                            }
+                        })
+                }}
+            </div>
             {move || {
                 if let Some(err) = load_error.get() {
                     view! { <p class="error">{err}</p> }.into_any()
                 } else if workspace.get().is_none() {
-                    view! { <p>"Loading workspace..."</p> }.into_any()
+                    view! {
+                        <div class="run-status-banner">
+                            <span class="spinner"></span>
+                            "Loading workspace..."
+                        </div>
+                    }
+                        .into_any()
                 } else {
                     match flow.get() {
                         FlowState::Editing => render_form(None).into_any(),
                         FlowState::Error(msg) => render_form(Some(msg)).into_any(),
-                        FlowState::Submitting => view! { <p>"Working..."</p> }.into_any(),
-                        FlowState::Answering {
-                            questions,
-                            answers,
-                            refined_goal,
-                            cost,
-                        } => {
+                        FlowState::Submitting => {
+                            view! {
+                                <div class="run-status-banner">
+                                    <span class="spinner"></span>
+                                    "Starting the run..."
+                                </div>
+                            }
+                                .into_any()
+                        }
+                        FlowState::Answering { questions, answers, .. } => {
                             let rows: Vec<_> = questions
                                 .iter()
                                 .enumerate()
@@ -320,72 +355,84 @@ pub fn NewRun() -> impl IntoView {
                                         answers.get(i).cloned().unwrap_or_default();
                                     view! {
                                         <div class="refine-question">
-                                            <label>
-                                                {question}
-                                                <input
-                                                    type="text"
-                                                    prop:value=current_answer
-                                                    on:input=move |ev| {
-                                                        let value = event_target_value(&ev);
-                                                        flow.update(|f| {
-                                                            if let FlowState::Answering {
-                                                                answers,
-                                                                ..
-                                                            } = f
-                                                            {
-                                                                if let Some(slot) =
-                                                                    answers.get_mut(i)
-                                                                {
-                                                                    *slot = value;
-                                                                }
+                                            <div class="q">{question}</div>
+                                            <input
+                                                type="text"
+                                                placeholder="Your answer..."
+                                                prop:value=current_answer
+                                                on:input=move |ev| {
+                                                    let value = event_target_value(&ev);
+                                                    flow.update(|f| {
+                                                        if let FlowState::Answering {
+                                                            answers,
+                                                            ..
+                                                        } = f
+                                                        {
+                                                            if let Some(slot) = answers.get_mut(i) {
+                                                                *slot = value;
                                                             }
-                                                        });
-                                                    }
-                                                />
-                                            </label>
+                                                        }
+                                                    });
+                                                }
+                                            />
                                         </div>
                                     }
                                 })
                                 .collect();
                             view! {
                                 <div class="refine-answering">
-                                    <h2>"A few clarifying questions"</h2>
-                                    <p class="hint">
-                                        "Working goal: " {refined_goal}
-                                    </p>
-                                    <p class="hint">
-                                        {format!("Refine cost so far: ${cost:.4}")}
-                                    </p>
+                                    <div class="refine-head">
+                                        <span class="step">"Step 1 / 2"</span>
+                                        "Answer a few questions"
+                                    </div>
                                     {rows}
-                                    <button type="button" on:click=on_continue>
-                                        "Continue"
-                                    </button>
+                                    <div class="new-run-actions">
+                                        <button
+                                            type="button"
+                                            class="btn-primary"
+                                            on:click=on_continue
+                                        >
+                                            "Continue"
+                                        </button>
+                                    </div>
                                 </div>
                             }
                             .into_any()
                         }
-                        FlowState::Confirming { goal, cost } => {
+                        FlowState::Confirming { goal, .. } => {
                             view! {
                                 <div class="refine-confirm">
-                                    <h2>"Confirm the goal"</h2>
+                                    <div class="refine-head">
+                                        <span class="step">"Step 2 / 2"</span>
+                                        "Confirm the refined goal"
+                                    </div>
                                     <p class="hint">
-                                        {format!("Refine cost so far: ${cost:.4}")}
+                                        "Edit as needed, then accept to begin planning."
                                     </p>
-                                    <textarea
-                                        rows="6"
-                                        prop:value=goal
-                                        on:input=move |ev| {
-                                            let value = event_target_value(&ev);
-                                            flow.update(|f| {
-                                                if let FlowState::Confirming { goal, .. } = f {
-                                                    *goal = value;
-                                                }
-                                            });
-                                        }
-                                    ></textarea>
-                                    <button type="button" on:click=on_plan.clone()>
-                                        "Plan"
-                                    </button>
+                                    <div class="field">
+                                        <textarea
+                                            class="refined-goal"
+                                            rows="6"
+                                            prop:value=goal
+                                            on:input=move |ev| {
+                                                let value = event_target_value(&ev);
+                                                flow.update(|f| {
+                                                    if let FlowState::Confirming { goal, .. } = f {
+                                                        *goal = value;
+                                                    }
+                                                });
+                                            }
+                                        ></textarea>
+                                    </div>
+                                    <div class="new-run-actions">
+                                        <button
+                                            type="button"
+                                            class="btn-primary"
+                                            on:click=on_plan.clone()
+                                        >
+                                            "Accept & plan"
+                                        </button>
+                                    </div>
                                 </div>
                             }
                             .into_any()
