@@ -64,6 +64,7 @@ pub struct EpicView {
     pub title: String,
     pub status: EpicStatus,
     pub cost: f64,
+    pub repo: String,
     pub depends_on: Vec<String>,
 }
 
@@ -71,6 +72,7 @@ pub struct EpicView {
 pub struct EpicMeta {
     pub id: String,
     pub title: String,
+    pub repo: String,
     pub depends_on: Vec<String>,
 }
 
@@ -82,20 +84,53 @@ pub struct EpicMeta {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum StageEvent {
     // Streaming from a session. `tag` is "plan" or an epic id.
-    StageLog { tag: String, line: String },
-    StageAssistant { tag: String, text: String },
-    StageTool { tag: String, name: String },
+    StageLog {
+        tag: String,
+        line: String,
+    },
+    StageAssistant {
+        tag: String,
+        text: String,
+    },
+    StageTool {
+        tag: String,
+        name: String,
+    },
     // Lifecycle.
-    PlanReady { epics: Vec<EpicMeta> },
-    EpicStarted { id: String, title: String },
-    EpicVerifying { id: String },
-    EpicSucceeded { id: String, cost: f64 },
-    EpicFailed { id: String, reason: String },
-    EpicSkipped { id: String },
-    EpicMerged { id: String },
-    EpicConflict { id: String },
-    Cost { total: f64 },
-    Fatal { reason: String },
+    PlanReady {
+        epics: Vec<EpicMeta>,
+    },
+    EpicStarted {
+        id: String,
+        title: String,
+        repo: String,
+    },
+    EpicVerifying {
+        id: String,
+    },
+    EpicSucceeded {
+        id: String,
+        cost: f64,
+    },
+    EpicFailed {
+        id: String,
+        reason: String,
+    },
+    EpicSkipped {
+        id: String,
+    },
+    EpicMerged {
+        id: String,
+    },
+    EpicConflict {
+        id: String,
+    },
+    Cost {
+        total: f64,
+    },
+    Fatal {
+        reason: String,
+    },
     Done,
 }
 
@@ -159,18 +194,20 @@ impl App {
                         title: meta.title,
                         status: EpicStatus::Pending,
                         cost: 0.0,
+                        repo: meta.repo,
                         depends_on: meta.depends_on,
                     })
                     .collect();
                 self.push_log(format!("plan ready: {} epics", self.epics.len()));
             }
-            StageEvent::EpicStarted { id, title } => {
+            StageEvent::EpicStarted { id, title, repo } => {
                 if self.epic_mut(&id).is_none() {
                     self.epics.push(EpicView {
                         id: id.clone(),
                         title: title.clone(),
                         status: EpicStatus::Running,
                         cost: 0.0,
+                        repo,
                         depends_on: Vec::new(),
                     });
                 } else {
@@ -200,6 +237,7 @@ impl App {
                         title: String::new(),
                         status: EpicStatus::Skipped,
                         cost: 0.0,
+                        repo: String::new(),
                         depends_on: Vec::new(),
                     });
                 } else {
@@ -318,6 +356,7 @@ pub struct RunSummary {
     pub total_cost: f64,
     pub budget: f64,
     pub epics: Vec<EpicView>,
+    pub repos: Vec<String>,
 }
 
 #[cfg(test)]
@@ -373,11 +412,13 @@ mod tests {
                 EpicMeta {
                     id: "a".to_string(),
                     title: "A".to_string(),
+                    repo: String::new(),
                     depends_on: vec![],
                 },
                 EpicMeta {
                     id: "b".to_string(),
                     title: "B".to_string(),
+                    repo: String::new(),
                     depends_on: vec!["a".to_string()],
                 },
             ],
@@ -386,6 +427,32 @@ mod tests {
         assert!(app.epics.iter().all(|e| e.status == EpicStatus::Pending));
         let b = app.epics.iter().find(|e| e.id == "b").unwrap();
         assert_eq!(b.depends_on, vec!["a".to_string()]);
+    }
+
+    #[test]
+    fn plan_ready_seeds_repo_on_each_card() {
+        let mut app = App::new("goal".to_string(), "ws".to_string(), 10.0);
+        app.apply_stage(StageEvent::PlanReady {
+            epics: vec![EpicMeta {
+                id: "a".to_string(),
+                title: "A".to_string(),
+                repo: "greentic".to_string(),
+                depends_on: vec![],
+            }],
+        });
+        assert_eq!(app.epics[0].repo, "greentic");
+    }
+
+    #[test]
+    fn epic_started_carries_repo_onto_a_new_card() {
+        let mut app = App::new("g".to_string(), "ws".to_string(), 10.0);
+        app.apply_stage(StageEvent::EpicStarted {
+            id: "z".to_string(),
+            title: "Z".to_string(),
+            repo: "billing".to_string(),
+        });
+        let card = app.epics.iter().find(|e| e.id == "z").unwrap();
+        assert_eq!(card.repo, "billing");
     }
 
     #[test]
@@ -537,10 +604,12 @@ mod tests {
             total_cost: 0.42,
             budget: 10.0,
             epics: Vec::new(),
+            repos: vec!["greentic".to_string()],
         };
         let json = serde_json::to_string(&summary).expect("serialize");
         let back: RunSummary = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back.workspace, "greentic");
         assert_eq!(back.phase, summary.phase);
+        assert_eq!(back.repos, vec!["greentic".to_string()]);
     }
 }

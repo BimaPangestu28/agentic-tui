@@ -68,6 +68,7 @@ pub async fn run_pipeline(
         .map(|epic| EpicMeta {
             id: epic.id.clone(),
             title: epic.title.clone(),
+            repo: epic.repo.clone(),
             depends_on: epic.depends_on.clone(),
         })
         .collect();

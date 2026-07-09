@@ -290,6 +290,7 @@ pub async fn run(
             let _ = tx.send(StageEvent::EpicStarted {
                 id: epic.id.clone(),
                 title: epic.title.clone(),
+                repo: epic.repo.clone(),
             });
             let scheduler = scheduler.clone();
             let config = config.clone();

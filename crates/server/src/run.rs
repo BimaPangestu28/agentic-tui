@@ -294,6 +294,14 @@ pub async fn list() -> Vec<shared::RunSummary> {
     let mut out = Vec::with_capacity(handles.len());
     for (id, workspace, repo, app) in handles {
         let app = app.lock().await;
+        let mut repos: Vec<String> = app
+            .epics
+            .iter()
+            .map(|epic| epic.repo.clone())
+            .filter(|repo| !repo.is_empty())
+            .collect();
+        repos.sort();
+        repos.dedup();
         out.push(shared::RunSummary {
             id,
             workspace,
@@ -303,6 +311,7 @@ pub async fn list() -> Vec<shared::RunSummary> {
             total_cost: app.total_cost,
             budget: app.budget,
             epics: app.epics.clone(),
+            repos,
         });
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
