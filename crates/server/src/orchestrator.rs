@@ -259,6 +259,33 @@ pub async fn run(
     config: RunConfig,
     tx: UnboundedSender<StageEvent>,
 ) -> anyhow::Result<()> {
+    let scheduler = Scheduler::new(plan, config::MAX_PARALLEL_EPICS);
+    drive(plan, config, scheduler, tx).await
+}
+
+/// Resume a run: seed the epics in `seed_merged` as already succeeded, then
+/// drive the scheduler over everything else. The seeded epics are skipped by
+/// `next_ready` (they are no longer Pending) and their dependents inherit the
+/// merged work already on the integration branch.
+pub async fn run_resume(
+    plan: &Plan,
+    config: RunConfig,
+    seed_merged: &[String],
+    tx: UnboundedSender<StageEvent>,
+) -> anyhow::Result<()> {
+    let mut scheduler = Scheduler::new(plan, config::MAX_PARALLEL_EPICS);
+    for id in seed_merged {
+        scheduler.mark_succeeded(id);
+    }
+    drive(plan, config, scheduler, tx).await
+}
+
+async fn drive(
+    plan: &Plan,
+    config: RunConfig,
+    scheduler: Scheduler,
+    tx: UnboundedSender<StageEvent>,
+) -> anyhow::Result<()> {
     let epics_by_id: HashMap<String, Epic> = plan
         .epics
         .iter()
@@ -270,7 +297,7 @@ pub async fn run(
         .map(|e| (e.id.clone(), e.repo.clone()))
         .collect();
     let repo_by_id = Arc::new(repo_by_id);
-    let scheduler = Arc::new(Mutex::new(Scheduler::new(plan, config::MAX_PARALLEL_EPICS)));
+    let scheduler = Arc::new(Mutex::new(scheduler));
     let config = Arc::new(config);
     let spent = Arc::new(Mutex::new(config.initial_cost));
     // One merge lock per repo. Merges into the same repo's integration branch
