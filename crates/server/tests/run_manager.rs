@@ -18,6 +18,20 @@ use tokio::sync::broadcast;
 /// two tests never spawn `claude`, so they do not need it.
 static PATH_ENV_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
+/// Point run persistence at a per-process temp directory instead of the user's
+/// real `~/.config/agentic-tui/runs/`. `run::start` persists on a background
+/// task, so the redirect must outlive each test; a `Once` sets it for the whole
+/// test binary and never unsets it. Without this, running `cargo test` would
+/// leave stray "happy"/"regA" runs on the developer's real dashboard.
+fn isolate_runs_dir() {
+    static ONCE: std::sync::Once = std::sync::Once::new();
+    ONCE.call_once(|| {
+        let dir = std::env::temp_dir().join(format!("agentic-runs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var("AGENTIC_RUNS_DIR", &dir);
+    });
+}
+
 fn git(repo: &Path, args: &[&str]) {
     let status = Command::new("git")
         .args(args)
@@ -101,6 +115,7 @@ fn install_slow_fake_claude(bin_dir: &Path, sleep_secs: u32) {
 /// an aborted run stays listed with a terminal phase instead of disappearing.
 #[tokio::test]
 async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
+    isolate_runs_dir();
     let _path_guard = PATH_ENV_LOCK.lock().await;
 
     let base = std::env::temp_dir().join(format!("run-mgr-registry-{}", std::process::id()));
@@ -197,6 +212,7 @@ async fn wait_for_terminal(last: &mut App, rx: &mut broadcast::Receiver<App>) {
 
 #[tokio::test]
 async fn a_run_streams_snapshots_to_done_with_the_expected_cost() {
+    isolate_runs_dir();
     let _path_guard = PATH_ENV_LOCK.lock().await;
 
     let base = std::env::temp_dir().join(format!("run-mgr-happy-{}", std::process::id()));
@@ -249,6 +265,7 @@ async fn a_run_streams_snapshots_to_done_with_the_expected_cost() {
 
 #[tokio::test]
 async fn start_rejects_an_invalid_base_ref() {
+    isolate_runs_dir();
     let base = std::env::temp_dir().join(format!("run-mgr-badbase-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     init_repo(&base);
@@ -273,6 +290,7 @@ async fn start_rejects_an_invalid_base_ref() {
 
 #[tokio::test]
 async fn start_rejects_a_checked_out_integration_target() {
+    isolate_runs_dir();
     let base = std::env::temp_dir().join(format!("run-mgr-checkedout-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&base);
     init_repo(&base);

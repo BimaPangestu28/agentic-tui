@@ -43,8 +43,15 @@ pub struct PersistedRun {
     pub app: App,
 }
 
-/// Default location of the run store: `~/.config/agentic-tui/runs/`.
+/// Location of the run store: `$AGENTIC_RUNS_DIR` when set, else
+/// `~/.config/agentic-tui/runs/`. The env override exists so tests that drive
+/// the real run manager (which persists on a background task) can redirect
+/// persistence to a temp directory instead of polluting the user's real
+/// dashboard.
 pub fn runs_dir() -> PathBuf {
+    if let Some(dir) = std::env::var_os("AGENTIC_RUNS_DIR") {
+        return PathBuf::from(dir);
+    }
     let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
     base.join(".config").join("agentic-tui").join("runs")
 }
