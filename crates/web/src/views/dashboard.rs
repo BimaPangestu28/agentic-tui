@@ -25,6 +25,16 @@ const COLUMNS: [(KanbanColumn, &str); 5] = [
     (KanbanColumn::Blocked, "Blocked"),
 ];
 
+/// "1 repo" / "3 repos": a count with a naively pluralized noun (append "s"
+/// past one). Keeps the dashboard from printing "1 repos" or "1 runs".
+fn plural(count: usize, singular: &str) -> String {
+    if count == 1 {
+        format!("1 {singular}")
+    } else {
+        format!("{count} {singular}s")
+    }
+}
+
 /// A short human label for an epic status. `EpicStatus` has no `Display`
 /// impl (it is a wire type shared with the server), so the card renders
 /// this instead. Kept local rather than shared with `views::run` so the two
@@ -248,12 +258,10 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
         {
             Some(group) => group.2.push(run.clone()),
             None => {
-                // Summarize the group's repos: the single repo's name, or a
-                // count when the run spans several.
-                let repo_summary = match run.repos.as_slice() {
-                    [only] => only.clone(),
-                    repos => format!("{} repos", repos.len()),
-                };
+                // Summarize the group's repos by count. The workspace name is
+                // already shown beside this, so repeating a single repo's name
+                // (often identical to the workspace) just read as "happy happy".
+                let repo_summary = plural(run.repos.len(), "repo");
                 groups.push((run.workspace.clone(), repo_summary, vec![run.clone()]));
             }
         }
@@ -282,9 +290,9 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
                                 </div>
                                 <div class="truncate font-mono text-[12px] text-dim">
                                     {format!(
-                                        "{} epics \u{00b7} {} repos",
-                                        run.epics.len(),
-                                        run.repos.len(),
+                                        "{} \u{00b7} {}",
+                                        plural(run.epics.len(), "epic"),
+                                        plural(run.repos.len(), "repo"),
                                     )}
                                 </div>
                             </div>
@@ -310,7 +318,7 @@ fn dashboard_body(runs: &[RunSummary]) -> impl IntoView {
                         <span class="font-mono text-[12px] text-dim">{repo_summary}</span>
                         <span class="ml-auto"></span>
                         <span class="rounded-full border border-line bg-inset px-[9px] py-px text-[12px] text-dim">
-                            {format!("{count} runs")}
+                            {plural(count, "run")}
                         </span>
                         <A
                             attr:class="inline-flex items-center rounded-md px-3 py-1.5 text-[13px] font-medium text-muted no-underline transition-colors hover:bg-inset hover:text-ink"
