@@ -65,6 +65,32 @@ impl RetryError {
     }
 }
 
+/// Why `resume` rejected a request: no such run (404), the run is still in
+/// flight (409), the run has nothing left to resume (400), or its saved plan
+/// could not be read (400).
+#[derive(Debug, Clone, PartialEq)]
+pub enum ResumeError {
+    NotFound,
+    RunActive,
+    NotResumable,
+    NoPlan,
+}
+
+impl ResumeError {
+    pub fn message(&self) -> String {
+        match self {
+            ResumeError::NotFound => "no such run".to_string(),
+            ResumeError::RunActive => {
+                "the run is still in flight; wait for it to finish before resuming".to_string()
+            }
+            ResumeError::NotResumable => {
+                "this run has no unfinished epics to resume".to_string()
+            }
+            ResumeError::NoPlan => "the saved plan for this run could not be read".to_string(),
+        }
+    }
+}
+
 /// One run in the registry, active or finished. Finished runs are kept
 /// around (not removed) so they still show up in `list()`.
 struct RunHandle {
@@ -202,6 +228,13 @@ fn next_id_after(runs: &[run_store::PersistedRun]) -> u64 {
         .max()
         .map(|max| max + 1)
         .unwrap_or(1)
+}
+
+/// True when a run can be resumed: it has ended in `Failed` and still has at
+/// least one epic that has not merged.
+fn resumable(app: &App) -> bool {
+    app.phase == shared::Phase::Failed
+        && app.epics.iter().any(|epic| epic.status != EpicStatus::Merged)
 }
 
 /// Rebuild the in-memory registry from the disk store at startup. Loads every
@@ -606,6 +639,135 @@ fn spawn_retry(
     })
 }
 
+/// Resume a finished-but-unfinished run: re-run every epic that has not merged,
+/// seeding the already-merged epics so the scheduler skips them. Reads the
+/// run's own saved plan from the disk store (not the shared `.agentic-plan.json`,
+/// which a later run may have overwritten). Cleans up any leftover worktrees
+/// first so `worktree::create` does not trip over a stale branch. Flips the run
+/// back to active so no new run starts on the workspace and `abort` can tear the
+/// resume down.
+pub async fn resume(run_id: &str) -> Result<(), ResumeError> {
+    let persisted = run_store::load_all(&run_store::runs_dir());
+    let saved = persisted
+        .into_iter()
+        .find(|run| run.id == run_id)
+        .ok_or(ResumeError::NotFound)?;
+    let plan = crate::plan::parse_plan(&saved.plan_json).map_err(|_| ResumeError::NoPlan)?;
+
+    let mut guard = RUNS.lock().await;
+    let runs = guard.get_or_insert_with(HashMap::new);
+    let handle = runs.get_mut(run_id).ok_or(ResumeError::NotFound)?;
+    if !handle.completed.load(Ordering::SeqCst) {
+        return Err(ResumeError::RunActive);
+    }
+    let (seed_merged, initial_cost) = {
+        let app = handle.app.lock().await;
+        if !resumable(&app) {
+            return Err(ResumeError::NotResumable);
+        }
+        let seed: Vec<String> = app
+            .epics
+            .iter()
+            .filter(|epic| epic.status == EpicStatus::Merged)
+            .map(|epic| epic.id.clone())
+            .collect();
+        (seed, app.total_cost)
+    };
+
+    handle.completed.store(false, Ordering::SeqCst);
+    let persist_ctx = build_persist_ctx(
+        &handle.id,
+        &handle.workspace,
+        &handle.goal,
+        &handle.default_verify,
+        &handle.plan_cwd,
+        &handle.repo_names,
+        &handle.repos,
+    );
+    let task = spawn_resume(
+        handle.app.clone(),
+        handle.tx.clone(),
+        handle.completed.clone(),
+        handle.repos.clone(),
+        handle.goal.clone(),
+        handle.default_verify.clone(),
+        plan,
+        seed_merged,
+        initial_cost,
+        handle.repo_paths.clone(),
+        persist_ctx,
+    );
+    handle.task = Some(task);
+    Ok(())
+}
+
+/// Spawn a task that cleans up leftover worktrees, then drives
+/// `orchestrator::run_resume` over the saved plan, forwarding events into the
+/// run's `App` and persisting on qualifying events. Marks the run completed
+/// when the event channel closes. Mirrors `spawn_pipeline` so `abort` tears it
+/// down the same way.
+#[allow(clippy::too_many_arguments)]
+fn spawn_resume(
+    app: Arc<Mutex<App>>,
+    tx: broadcast::Sender<App>,
+    completed: Arc<AtomicBool>,
+    repos: Arc<HashMap<String, orchestrator::RepoRun>>,
+    goal: String,
+    default_verify: String,
+    plan: crate::plan::Plan,
+    seed_merged: Vec<String>,
+    initial_cost: f64,
+    repo_paths: Vec<PathBuf>,
+    persist_ctx: PersistCtx,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        // Clear any worktrees a killed run left behind so create() does not
+        // fail on a stale agentic/<id> branch. Merged work is safe on the
+        // integration branch; conflict worktrees are re-run from scratch.
+        for repo in &repo_paths {
+            if let Err(e) = worktree::cleanup_all(repo).await {
+                eprintln!(
+                    "warning: could not clean up worktrees for {}: {e}",
+                    repo.display()
+                );
+            }
+        }
+
+        let (pipeline_tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();
+        let config = orchestrator::RunConfig {
+            repos: (*repos).clone(),
+            goal,
+            default_verify,
+            initial_cost,
+        };
+
+        let pipeline_fut = async move {
+            if let Err(e) =
+                orchestrator::run_resume(&plan, config, &seed_merged, pipeline_tx.clone()).await
+            {
+                let _ = pipeline_tx.send(StageEvent::Fatal {
+                    reason: e.to_string(),
+                });
+            }
+        };
+
+        let forward_fut = async {
+            while let Some(stage) = rx.recv().await {
+                let persist_this = should_persist(&stage);
+                let mut app = app.lock().await;
+                app.apply_stage(stage);
+                let _ = tx.send(app.clone());
+                if persist_this {
+                    persist(&persist_ctx, &app);
+                }
+            }
+        };
+
+        tokio::join!(pipeline_fut, forward_fut);
+        completed.store(true, Ordering::SeqCst);
+    })
+}
+
 /// Abort the run identified by `id` if it exists and has not completed:
 /// abort its task and await its unwind (killing any in-flight `claude`/`git`
 /// child processes via `kill_on_drop` as the pipeline future drops), mark it
@@ -887,5 +1049,34 @@ mod tests {
     #[test]
     fn next_id_after_starts_at_one_when_empty() {
         assert_eq!(next_id_after(&[]), 1);
+    }
+
+    #[test]
+    fn resumable_needs_a_failed_run_with_unfinished_work() {
+        let mut app = App::new("g".to_string(), "ws".to_string());
+        app.epics = vec![EpicView {
+            id: "a".into(),
+            title: "A".into(),
+            status: EpicStatus::Failed,
+            cost: 0.0,
+            repo: "r".into(),
+            depends_on: vec![],
+            reason: None,
+        }];
+
+        app.phase = Phase::Implementing;
+        assert!(!resumable(&app), "a running run is not resumable");
+
+        app.phase = Phase::Failed;
+        assert!(resumable(&app), "a failed run with a non-merged epic is resumable");
+
+        app.epics[0].status = EpicStatus::Merged;
+        assert!(!resumable(&app), "nothing left to resume when all epics merged");
+    }
+
+    #[test]
+    fn resume_error_messages_are_distinct() {
+        assert_ne!(ResumeError::NotFound.message(), ResumeError::RunActive.message());
+        assert_ne!(ResumeError::NotResumable.message(), ResumeError::NoPlan.message());
     }
 }
