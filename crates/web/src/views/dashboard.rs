@@ -423,7 +423,7 @@ pub fn Dashboard() -> impl IntoView {
                     </p>
                 </div>
                 <A
-                    attr:class="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-md bg-accent px-[18px] py-2.5 text-[14px] font-semibold text-accent-fg no-underline shadow-card transition-colors hover:bg-accent-hover active:bg-accent-press"
+                    attr:class="btn-primary"
                     href="/workspaces"
                 >
                     "+ New run"
@@ -439,7 +439,7 @@ pub fn Dashboard() -> impl IntoView {
                             </span>
                             <p>"No runs yet in this session."</p>
                             <A
-                                attr:class="inline-flex min-h-[38px] items-center justify-center gap-2 rounded-md bg-accent px-[18px] py-2.5 text-[14px] font-semibold text-accent-fg no-underline shadow-card transition-colors hover:bg-accent-hover active:bg-accent-press"
+                                attr:class="btn-primary"
                                 href="/workspaces"
                             >
                                 "Add a workspace"

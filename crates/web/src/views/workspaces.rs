@@ -149,10 +149,7 @@ pub fn Workspaces() -> impl IntoView {
                       placeholder:text-dim hover:border-line-strong focus:outline-none \
                       focus:border-accent/40 focus:bg-surface focus:ring-[3px] \
                       focus:ring-accent/12";
-    let btn_primary = "inline-flex items-center justify-center gap-2 rounded-md \
-                       bg-accent px-[18px] py-2.5 min-h-[38px] text-[14px] font-semibold \
-                       text-accent-fg shadow-card transition-colors hover:bg-accent-hover \
-                       active:bg-accent-press disabled:opacity-50 disabled:cursor-not-allowed";
+    let btn_primary = "btn-primary";
 
     view! {
         <div class="flex flex-col gap-8">
