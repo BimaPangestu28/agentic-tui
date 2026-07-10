@@ -243,6 +243,35 @@ fn recover_interrupted(app: &mut App) {
     }
 }
 
+/// Derive a git-branch-safe integration branch name from the run's goal, e.g.
+/// "Add a /healthz endpoint" -> "agentic/add-a-healthz-endpoint". Lowercases
+/// ASCII, turns every run of other characters into a single `-`, trims dashes,
+/// and caps the slug so the branch stays readable. An empty or all-punctuation
+/// goal falls back to "agentic/run".
+fn integration_branch_for(goal: &str) -> String {
+    const MAX_SLUG: usize = 40;
+    let mut slug = String::with_capacity(MAX_SLUG);
+    let mut prev_dash = false;
+    for ch in goal.chars() {
+        if slug.len() >= MAX_SLUG {
+            break;
+        }
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+            prev_dash = false;
+        } else if !prev_dash && !slug.is_empty() {
+            slug.push('-');
+            prev_dash = true;
+        }
+    }
+    let slug = slug.trim_end_matches('-');
+    if slug.is_empty() {
+        "agentic/run".to_string()
+    } else {
+        format!("agentic/{slug}")
+    }
+}
+
 /// The next run id to hand out so a new run never collides with a rehydrated
 /// one: one past the largest numeric id on disk, or 1 when the store is empty.
 fn next_id_after(runs: &[run_store::PersistedRun]) -> u64 {
@@ -366,10 +395,13 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let mut repos: HashMap<String, orchestrator::RepoRun> = HashMap::new();
     for repo in &workspace.repos {
         let base_ref = repo.base.clone().unwrap_or_else(|| "HEAD".to_string());
+        // The integration branch is derived from the goal by default (the
+        // new-run form no longer asks for one). A `~/.config` workspace entry
+        // may still pin an explicit integration branch as an override.
         let integration = repo
             .integration
             .clone()
-            .unwrap_or_else(|| "agentic-integration".to_string());
+            .unwrap_or_else(|| integration_branch_for(&req.goal));
 
         worktree::verify_ref(&repo.path, &base_ref)
             .await
@@ -1138,6 +1170,35 @@ mod tests {
     #[test]
     fn next_id_after_starts_at_one_when_empty() {
         assert_eq!(next_id_after(&[]), 1);
+    }
+
+    #[test]
+    fn integration_branch_for_slugs_the_goal() {
+        assert_eq!(
+            integration_branch_for("Add a /healthz endpoint"),
+            "agentic/add-a-healthz-endpoint"
+        );
+        assert_eq!(integration_branch_for("do nothing"), "agentic/do-nothing");
+        // Leading/trailing/adjacent punctuation collapses to single dashes and
+        // never leaves a leading or trailing dash.
+        assert_eq!(
+            integration_branch_for("  --Fix!! the   bug.  "),
+            "agentic/fix-the-bug"
+        );
+        // Non-ASCII becomes a separator, keeping the ref ASCII-safe.
+        assert_eq!(integration_branch_for("Café münchen"), "agentic/caf-m-nchen");
+        // An empty or all-punctuation goal still yields a valid branch.
+        assert_eq!(integration_branch_for(""), "agentic/run");
+        assert_eq!(integration_branch_for("!!! ???"), "agentic/run");
+    }
+
+    #[test]
+    fn integration_branch_for_caps_the_slug_length() {
+        let long = "a".repeat(200);
+        let branch = integration_branch_for(&long);
+        // "agentic/" + at most 40 slug chars.
+        assert!(branch.starts_with("agentic/"));
+        assert!(branch.len() <= "agentic/".len() + 40, "got {branch}");
     }
 
     #[test]

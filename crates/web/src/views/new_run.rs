@@ -11,10 +11,6 @@ use shared::{Language, RepoDto, StartRunRequest, WorkspaceDto};
 
 use crate::api;
 
-/// The fallback integration branch name offered when a repo's workspace config
-/// does not pin one. Matches the server's default in `run::start`.
-const DEFAULT_INTEGRATION: &str = "agentic-integration";
-
 /// Where a repo's branch list is in its fetch lifecycle. `Loaded` drives the
 /// real dropdowns; `Failed` falls the form back to free-text inputs so a repo
 /// whose branches could not be listed never blocks starting a run.
@@ -25,22 +21,22 @@ enum BranchStatus {
     Failed,
 }
 
-/// Per-repo branch selection for the form: the chosen base ref and integration
-/// branch, plus the repo's real branches once fetched. Held as plain data in a
-/// single `Vec` signal (updated by index), not a signal per field.
+/// Per-repo base-branch selection for the form, plus the repo's real branches
+/// once fetched. Held as plain data in a single `Vec` signal (updated by
+/// index), not a signal per field. The integration branch is no longer chosen
+/// here; the server derives it from the goal.
 #[derive(Clone, Debug, PartialEq)]
 struct RepoBranchState {
     name: String,
     path: String,
     base: String,
-    integration: String,
     branches: Vec<String>,
     status: BranchStatus,
 }
 
-/// Build the `WorkspaceDto` to submit, folding each repo's chosen base and
-/// integration branch (blank means "unset", so the server applies its default)
-/// back into the repos. Returns `None` if the workspace has not loaded yet.
+/// Build the `WorkspaceDto` to submit, folding each repo's chosen base branch
+/// back into the repos (blank means "unset", so the server applies its
+/// default). Integration is left unset for the server to derive from the goal.
 fn workspace_from_states(name: &str, states: &[RepoBranchState]) -> WorkspaceDto {
     let repos = states
         .iter()
@@ -48,7 +44,7 @@ fn workspace_from_states(name: &str, states: &[RepoBranchState]) -> WorkspaceDto
             name: state.name.clone(),
             path: state.path.clone(),
             base: normalize(state.base.clone()),
-            integration: normalize(state.integration.clone()),
+            integration: None,
         })
         .collect();
     WorkspaceDto {
@@ -162,12 +158,13 @@ fn load_branches(repo_states: RwSignal<Vec<RepoBranchState>>) {
     }
 }
 
-/// One repo's branch controls. Both base and integration are editable
-/// comboboxes over the repo's real branches (a native `datalist`): the dropdown
-/// suggests actual branches, but the user can type any ref — a remote branch, a
-/// tag, or a new integration name. A rigid `<select>` was too limiting: a
-/// workspace may be a single repo or many sub-repos, and a base ref is not
-/// always one of the local heads. Edits write back into `repo_states[index]`.
+/// One repo's base-branch control: an editable combobox over the repo's real
+/// branches (a native `datalist`). The dropdown suggests actual branches, but
+/// the user can type any ref — a remote branch, a tag, a commit. A rigid
+/// `<select>` was too limiting: a workspace may be a single repo or many
+/// sub-repos, and a base ref is not always one of the local heads. The edit
+/// writes back into `repo_states[index]`. The integration branch is not shown;
+/// the server derives it from the goal.
 fn repo_branch_row(
     repo_states: RwSignal<Vec<RepoBranchState>>,
     index: usize,
@@ -180,8 +177,8 @@ fn repo_branch_row(
     let sub_label = "text-[12px] font-semibold text-muted";
     let datalist_id = format!("branches-{index}");
 
-    // One datalist of the repo's real branches, shared by both the base and the
-    // integration input as autocomplete suggestions.
+    // A datalist of the repo's real branches, offered as base-branch
+    // autocomplete suggestions.
     let branch_options = state
         .branches
         .iter()
@@ -211,43 +208,23 @@ fn repo_branch_row(
                 <span class="truncate font-mono text-[12px] text-dim">{state.path.clone()}</span>
             </div>
             {status_hint}
-            <div class="grid grid-cols-1 min-[560px]:grid-cols-2 gap-3">
-                <div class="flex flex-col gap-1">
-                    <label class=sub_label>"Base branch"</label>
-                    <input
-                        type="text"
-                        class=control_class
-                        list=datalist_id.clone()
-                        prop:value=state.base.clone()
-                        on:input=move |ev| {
-                            let value = event_target_value(&ev);
-                            repo_states
-                                .update(|states| {
-                                    if let Some(s) = states.get_mut(index) {
-                                        s.base = value;
-                                    }
-                                });
-                        }
-                    />
-                </div>
-                <div class="flex flex-col gap-1">
-                    <label class=sub_label>"Integration branch"</label>
-                    <input
-                        type="text"
-                        class=control_class
-                        list=datalist_id.clone()
-                        prop:value=state.integration.clone()
-                        on:input=move |ev| {
-                            let value = event_target_value(&ev);
-                            repo_states
-                                .update(|states| {
-                                    if let Some(s) = states.get_mut(index) {
-                                        s.integration = value;
-                                    }
-                                });
-                        }
-                    />
-                </div>
+            <div class="flex flex-col gap-1">
+                <label class=sub_label>"Base branch"</label>
+                <input
+                    type="text"
+                    class=control_class
+                    list=datalist_id.clone()
+                    prop:value=state.base.clone()
+                    on:input=move |ev| {
+                        let value = event_target_value(&ev);
+                        repo_states
+                            .update(|states| {
+                                if let Some(s) = states.get_mut(index) {
+                                    s.base = value;
+                                }
+                            });
+                    }
+                />
             </div>
             <datalist id=datalist_id>{branch_options}</datalist>
         </div>
@@ -297,8 +274,8 @@ pub fn NewRun() -> impl IntoView {
     let verify_input = RwSignal::new(String::new());
     let refine_enabled = RwSignal::new(true);
     let language = RwSignal::new(Language::English);
-    // Per-repo base/integration branch selection, filled once the workspace
-    // loads and each repo's branches are fetched.
+    // Per-repo base-branch selection, filled once the workspace loads and each
+    // repo's branches are fetched.
     let repo_states = RwSignal::new(Vec::<RepoBranchState>::new());
 
     let flow = RwSignal::new(FlowState::Editing);
@@ -340,10 +317,9 @@ pub fn NewRun() -> impl IntoView {
             match api::list_workspaces().await {
                 Ok(list) => match list.into_iter().find(|w| w.name == name) {
                     Some(found) => {
-                        // Seed the per-repo branch state from the workspace
-                        // config (base/integration may be preset there), then
-                        // fetch each repo's real branches to populate the
-                        // dropdowns.
+                        // Seed the per-repo base branch from the workspace
+                        // config (it may be preset there), then fetch each
+                        // repo's real branches to populate the dropdown.
                         repo_states.set(
                             found
                                 .repos
@@ -352,10 +328,6 @@ pub fn NewRun() -> impl IntoView {
                                     name: repo.name.clone(),
                                     path: repo.path.clone(),
                                     base: repo.base.clone().unwrap_or_default(),
-                                    integration: repo
-                                        .integration
-                                        .clone()
-                                        .unwrap_or_else(|| DEFAULT_INTEGRATION.to_string()),
                                     branches: Vec::new(),
                                     status: BranchStatus::Loading,
                                 })
