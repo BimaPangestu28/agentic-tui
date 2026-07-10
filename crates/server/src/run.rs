@@ -173,6 +173,92 @@ fn persist_to(dir: &Path, ctx: &PersistCtx, app: &App) {
     }
 }
 
+/// Transform a snapshot loaded from disk into an honest post-restart state. A
+/// run still mid-flight (`Implementing`) becomes `Failed`, and any epic caught
+/// `Running` or `Verifying` becomes `Failed` with a restart reason, so the
+/// board never shows a run as active when nothing is driving it. Terminal
+/// snapshots (`Done`, or a run that already `Failed`) are left untouched.
+fn recover_interrupted(app: &mut App) {
+    if app.phase != shared::Phase::Implementing {
+        return;
+    }
+    app.phase = shared::Phase::Failed;
+    app.error = Some(
+        "Interrupted by a server restart. Resume to continue the unfinished epics.".to_string(),
+    );
+    for epic in &mut app.epics {
+        if matches!(epic.status, EpicStatus::Running | EpicStatus::Verifying) {
+            epic.status = EpicStatus::Failed;
+            epic.reason = Some("interrupted by a server restart".to_string());
+        }
+    }
+}
+
+/// The next run id to hand out so a new run never collides with a rehydrated
+/// one: one past the largest numeric id on disk, or 1 when the store is empty.
+fn next_id_after(runs: &[run_store::PersistedRun]) -> u64 {
+    runs.iter()
+        .filter_map(|run| run.id.parse::<u64>().ok())
+        .max()
+        .map(|max| max + 1)
+        .unwrap_or(1)
+}
+
+/// Rebuild the in-memory registry from the disk store at startup. Loads every
+/// persisted run, recovers interrupted state, inserts a read-only handle
+/// (`task: None`, `completed: true`) per run, and advances `NEXT_ID` past the
+/// largest rehydrated id. Called once from `serve` before the router accepts
+/// requests, so no lock contention with live runs is possible here.
+pub async fn rehydrate() {
+    let persisted = run_store::load_all(&run_store::runs_dir());
+    if persisted.is_empty() {
+        return;
+    }
+    let next_id = next_id_after(&persisted);
+
+    let mut guard = RUNS.lock().await;
+    let runs = guard.get_or_insert_with(HashMap::new);
+    for persisted_run in persisted {
+        let mut app = persisted_run.app;
+        recover_interrupted(&mut app);
+
+        let repos: HashMap<String, orchestrator::RepoRun> = persisted_run
+            .repos
+            .iter()
+            .map(|repo| {
+                (
+                    repo.name.clone(),
+                    orchestrator::RepoRun {
+                        path: repo.path.clone(),
+                        base_ref: repo.base_ref.clone(),
+                        integration_branch: repo.integration_branch.clone(),
+                    },
+                )
+            })
+            .collect();
+        let repo_names: Vec<String> = persisted_run.repos.iter().map(|r| r.name.clone()).collect();
+        let repo_paths: Vec<PathBuf> = persisted_run.repos.iter().map(|r| r.path.clone()).collect();
+
+        let (tx, _rx) = broadcast::channel::<App>(SNAPSHOT_CHANNEL_CAPACITY);
+        let handle = RunHandle {
+            id: persisted_run.id.clone(),
+            workspace: persisted_run.workspace,
+            app: Arc::new(Mutex::new(app)),
+            tx,
+            task: None,
+            repo_paths,
+            repo_names,
+            completed: Arc::new(AtomicBool::new(true)),
+            plan_cwd: persisted_run.plan_cwd,
+            repos: Arc::new(repos),
+            goal: persisted_run.goal,
+            default_verify: persisted_run.default_verify,
+        };
+        runs.insert(persisted_run.id, handle);
+    }
+    NEXT_ID.store(next_id, Ordering::SeqCst);
+}
+
 /// Every run started this session, keyed by id. `Mutex::const_new` cannot
 /// build a `HashMap` in a const context, so the map is built lazily on first
 /// use via `get_or_insert_with` at each lock site.
@@ -655,7 +741,7 @@ pub async fn list() -> Vec<shared::RunSummary> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use shared::Phase;
+    use shared::{EpicView, Phase};
 
     #[test]
     fn should_persist_ignores_streaming_events_only() {
@@ -709,5 +795,97 @@ mod tests {
         assert_eq!(loaded[0].plan_json, r#"{"epics":[]}"#);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn recover_interrupted_fails_a_mid_flight_run() {
+        let mut app = App::new("g".to_string(), "ws".to_string());
+        app.phase = Phase::Implementing;
+        app.epics = vec![
+            EpicView {
+                id: "a".into(),
+                title: "A".into(),
+                status: EpicStatus::Running,
+                cost: 0.0,
+                repo: "r".into(),
+                depends_on: vec![],
+                reason: None,
+            },
+            EpicView {
+                id: "b".into(),
+                title: "B".into(),
+                status: EpicStatus::Merged,
+                cost: 0.1,
+                repo: "r".into(),
+                depends_on: vec![],
+                reason: None,
+            },
+            EpicView {
+                id: "c".into(),
+                title: "C".into(),
+                status: EpicStatus::Pending,
+                cost: 0.0,
+                repo: "r".into(),
+                depends_on: vec![],
+                reason: None,
+            },
+        ];
+
+        recover_interrupted(&mut app);
+
+        assert_eq!(app.phase, Phase::Failed);
+        assert!(app.error.is_some());
+        assert_eq!(app.epics[0].status, EpicStatus::Failed, "Running becomes Failed");
+        assert!(app.epics[0].reason.is_some());
+        assert_eq!(app.epics[1].status, EpicStatus::Merged, "Merged is kept");
+        assert_eq!(app.epics[2].status, EpicStatus::Pending, "Pending is kept");
+    }
+
+    #[test]
+    fn recover_interrupted_leaves_a_finished_run_alone() {
+        let mut app = App::new("g".to_string(), "ws".to_string());
+        app.phase = Phase::Done;
+        app.epics = vec![EpicView {
+            id: "a".into(),
+            title: "A".into(),
+            status: EpicStatus::Merged,
+            cost: 0.1,
+            repo: "r".into(),
+            depends_on: vec![],
+            reason: None,
+        }];
+        recover_interrupted(&mut app);
+        assert_eq!(app.phase, Phase::Done);
+        assert!(app.error.is_none());
+        assert_eq!(app.epics[0].status, EpicStatus::Merged);
+    }
+
+    #[test]
+    fn next_id_after_is_one_past_the_max_numeric_id() {
+        let dir = std::env::temp_dir().join(format!("next-id-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        for id in ["2", "5", "3"] {
+            let mut app = App::new("g".to_string(), "ws".to_string());
+            app.phase = Phase::Done;
+            let run = run_store::PersistedRun {
+                id: id.to_string(),
+                workspace: "ws".to_string(),
+                goal: "g".to_string(),
+                default_verify: "make verify".to_string(),
+                plan_cwd: std::path::PathBuf::from("/tmp"),
+                repos: vec![],
+                plan_json: r#"{"epics":[]}"#.to_string(),
+                app,
+            };
+            run_store::save(&dir, &run).unwrap();
+        }
+        let runs = run_store::load_all(&dir);
+        assert_eq!(next_id_after(&runs), 6);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn next_id_after_starts_at_one_when_empty() {
+        assert_eq!(next_id_after(&[]), 1);
     }
 }
