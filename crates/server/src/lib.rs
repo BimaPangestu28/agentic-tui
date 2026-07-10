@@ -14,6 +14,7 @@ pub mod orchestrator;
 pub mod plan;
 pub mod refine;
 pub mod run;
+pub mod run_store;
 pub mod workspace;
 pub mod worktree;
 
