@@ -162,10 +162,12 @@ fn load_branches(repo_states: RwSignal<Vec<RepoBranchState>>) {
     }
 }
 
-/// One repo's branch controls: a base-branch dropdown (of the repo's real
-/// branches, or a free-text input while loading or after a failed fetch) and an
-/// editable integration-branch combobox (a `datalist` of existing branches the
-/// user can pick from or type past). Edits write back into `repo_states[index]`.
+/// One repo's branch controls. Both base and integration are editable
+/// comboboxes over the repo's real branches (a native `datalist`): the dropdown
+/// suggests actual branches, but the user can type any ref — a remote branch, a
+/// tag, or a new integration name. A rigid `<select>` was too limiting: a
+/// workspace may be a single repo or many sub-repos, and a base ref is not
+/// always one of the local heads. Edits write back into `repo_states[index]`.
 fn repo_branch_row(
     repo_states: RwSignal<Vec<RepoBranchState>>,
     index: usize,
@@ -178,62 +180,9 @@ fn repo_branch_row(
     let sub_label = "text-[12px] font-semibold text-muted";
     let datalist_id = format!("branches-{index}");
 
-    // Base: a real dropdown once branches are known; a free-text input while
-    // loading or after a failed fetch (so the form is never blocked).
-    let base_control = if matches!(state.status, BranchStatus::Loaded) && !state.branches.is_empty()
-    {
-        let selected_base = state.base.clone();
-        let options = state
-            .branches
-            .iter()
-            .cloned()
-            .map(|branch| {
-                let is_selected = branch == selected_base;
-                let label = branch.clone();
-                view! { <option value=branch selected=is_selected>{label}</option> }
-            })
-            .collect::<Vec<_>>();
-        view! {
-            <select
-                class=control_class
-                prop:value=state.base.clone()
-                on:change=move |ev| {
-                    let value = event_target_value(&ev);
-                    repo_states
-                        .update(|states| {
-                            if let Some(s) = states.get_mut(index) {
-                                s.base = value;
-                            }
-                        });
-                }
-            >
-                {options}
-            </select>
-        }
-        .into_any()
-    } else {
-        view! {
-            <input
-                type="text"
-                class=control_class
-                prop:value=state.base.clone()
-                on:input=move |ev| {
-                    let value = event_target_value(&ev);
-                    repo_states
-                        .update(|states| {
-                            if let Some(s) = states.get_mut(index) {
-                                s.base = value;
-                            }
-                        });
-                }
-            />
-        }
-        .into_any()
-    };
-
-    // Integration: an editable combobox via a native datalist, so the user can
-    // pick an existing branch or type a new name.
-    let integration_options = state
+    // One datalist of the repo's real branches, shared by both the base and the
+    // integration input as autocomplete suggestions.
+    let branch_options = state
         .branches
         .iter()
         .cloned()
@@ -265,7 +214,21 @@ fn repo_branch_row(
             <div class="grid grid-cols-1 min-[560px]:grid-cols-2 gap-3">
                 <div class="flex flex-col gap-1">
                     <label class=sub_label>"Base branch"</label>
-                    {base_control}
+                    <input
+                        type="text"
+                        class=control_class
+                        list=datalist_id.clone()
+                        prop:value=state.base.clone()
+                        on:input=move |ev| {
+                            let value = event_target_value(&ev);
+                            repo_states
+                                .update(|states| {
+                                    if let Some(s) = states.get_mut(index) {
+                                        s.base = value;
+                                    }
+                                });
+                        }
+                    />
                 </div>
                 <div class="flex flex-col gap-1">
                     <label class=sub_label>"Integration branch"</label>
@@ -284,9 +247,9 @@ fn repo_branch_row(
                                 });
                         }
                     />
-                    <datalist id=datalist_id>{integration_options}</datalist>
                 </div>
             </div>
+            <datalist id=datalist_id>{branch_options}</datalist>
         </div>
     }
 }
