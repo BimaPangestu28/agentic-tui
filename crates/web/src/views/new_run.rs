@@ -132,10 +132,7 @@ pub fn NewRun() -> impl IntoView {
         min-h-[38px] text-[14px] text-ink transition-colors placeholder:text-dim \
         hover:border-line-strong focus:outline-none focus:border-accent/40 \
         focus:bg-surface focus:ring-[3px] focus:ring-accent/12";
-    let primary_button = "inline-flex items-center justify-center gap-2 rounded-md \
-        bg-accent px-[18px] py-2.5 min-h-[38px] text-[14px] font-semibold \
-        text-accent-fg shadow-card transition-colors hover:bg-accent-hover \
-        active:bg-accent-press disabled:opacity-50 disabled:cursor-not-allowed";
+    let primary_button = "btn-primary";
     let actions_class = "flex items-center justify-end gap-3";
     let error_class = "flex items-start gap-2 rounded-md border border-block/30 \
         bg-block/10 px-4 py-3 text-[13px] text-danger before:content-['⚠']";
@@ -374,7 +371,7 @@ pub fn NewRun() -> impl IntoView {
                 <div class=actions_class>
                     <button
                         type="button"
-                        class="inline-flex items-center justify-center gap-2 rounded-md border border-transparent bg-transparent px-[18px] py-2.5 min-h-[38px] text-[14px] font-medium text-muted transition-colors hover:bg-inset hover:text-ink"
+                        class="btn-ghost"
                         on:click={
                             let nav = navigate.clone();
                             move |_| nav("/", Default::default())

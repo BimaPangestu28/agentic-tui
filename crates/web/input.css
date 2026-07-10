@@ -31,7 +31,7 @@
   --color-accent: #e08a2b;
   --color-accent-hover: #c9781f;
   --color-accent-press: #b36a18;
-  --color-accent-fg: #241a06; /* text on a filled amber surface */
+  --color-accent-fg: #1a1200; /* text on a filled amber surface (warm near-black) */
 
   /* Status semantics */
   --color-todo: #6b7280;
@@ -145,5 +145,36 @@
   * {
     scrollbar-width: thin;
     scrollbar-color: var(--color-line-strong) transparent;
+  }
+}
+
+/* ---- Layout hook: the page content column ------------------------------
+ * `<main class="app-main">` (in main.rs) wraps every route. The design brief
+ * calls for a centered, max-width column; without this rule the content
+ * stretched edge-to-edge with no padding. In the components layer so it wins
+ * over preflight but still loses to any Tailwind utility. */
+@layer components {
+  .app-main {
+    max-width: 1200px;
+    margin-inline: auto;
+    padding: 32px 24px 64px;
+  }
+
+  /* ---- Buttons: one source of truth ------------------------------------
+   * The primary (amber) and ghost (quiet) button looks used to be copied as
+   * long utility strings across every view. They live here now so background
+   * and text color stay consistent everywhere; `disabled:*` is harmless on
+   * the `<A>` links that also use `.btn-primary`. */
+  .btn-primary {
+    @apply inline-flex min-h-[38px] items-center justify-center gap-2 rounded-md
+      bg-accent px-[18px] py-2.5 text-[14px] font-semibold text-accent-fg
+      no-underline shadow-card transition-colors hover:bg-accent-hover
+      active:bg-accent-press disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-ghost {
+    @apply inline-flex min-h-[38px] items-center justify-center gap-2 rounded-md
+      bg-transparent px-[18px] py-2.5 text-[14px] font-medium text-muted
+      no-underline transition-colors hover:bg-inset hover:text-ink
+      disabled:cursor-not-allowed disabled:opacity-50;
   }
 }

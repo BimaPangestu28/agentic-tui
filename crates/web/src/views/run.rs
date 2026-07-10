@@ -597,12 +597,7 @@ pub fn Run() -> impl IntoView {
                                         <div class="col-start-2 row-start-1 flex items-center gap-2">
                                             <button
                                                 type="button"
-                                                class="inline-flex items-center justify-center gap-2 \
-                                                rounded-md bg-accent px-[18px] py-2.5 min-h-[38px] \
-                                                text-[14px] font-semibold text-accent-fg shadow-card \
-                                                transition-colors hover:bg-accent-hover \
-                                                active:bg-accent-press disabled:opacity-50 \
-                                                disabled:cursor-not-allowed"
+                                                class="btn-primary"
                                                 disabled=move || resuming.get()
                                                 on:click=on_resume.clone()
                                             >
