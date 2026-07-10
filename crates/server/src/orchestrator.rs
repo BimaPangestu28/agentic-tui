@@ -155,7 +155,7 @@ impl Scheduler {
 
 /// One repository a run targets: where it lives, the ref its epics branch
 /// from, and the branch their work merges into.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct RepoRun {
     pub path: PathBuf,
     pub base_ref: String,
@@ -664,5 +664,19 @@ mod tests {
         assert!(snap
             .iter()
             .any(|(id, s)| id == "a" && *s == EpicState::Failed));
+    }
+
+    #[test]
+    fn repo_run_round_trips_through_json() {
+        let rc = RepoRun {
+            path: std::path::PathBuf::from("/tmp/x"),
+            base_ref: "main".to_string(),
+            integration_branch: "agentic-integration".to_string(),
+        };
+        let json = serde_json::to_string(&rc).expect("RepoRun must serialize");
+        let back: RepoRun = serde_json::from_str(&json).expect("RepoRun must deserialize");
+        assert_eq!(back.path, rc.path);
+        assert_eq!(back.base_ref, rc.base_ref);
+        assert_eq!(back.integration_branch, rc.integration_branch);
     }
 }
