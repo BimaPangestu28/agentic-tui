@@ -1,3 +1,14 @@
 [build]
 target = "index.html"
 dist = "dist"
+
+# Generate the Tailwind stylesheet before trunk processes index.html, so the
+# `<link data-trunk rel="css" href="tailwind.css">` picks up fresh output.
+# Requires `npm install` in this crate first (the Makefile `web` target does it).
+[[hooks]]
+stage = "pre_build"
+command = "sh"
+command_arguments = [
+    "-c",
+    "./node_modules/.bin/tailwindcss -i input.css -o tailwind.css --minify",
+]

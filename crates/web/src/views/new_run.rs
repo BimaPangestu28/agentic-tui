@@ -121,6 +121,37 @@ pub fn NewRun() -> impl IntoView {
 
     let flow = RwSignal::new(FlowState::Editing);
 
+    // Inline Tailwind utility recipes reused across the form and the refine
+    // sub-flow. Named bindings (mirroring the app bar's `nav_link`) keep the
+    // repeated input/button/panel looks defined in one place. They are
+    // `&'static str`, so each closure below copies rather than moves them.
+    let field_class = "flex flex-col gap-2";
+    let field_label = "text-[13px] font-semibold text-ink";
+    let hint_class = "text-[13px] leading-normal text-dim";
+    let input_class = "w-full rounded-md border border-line bg-inset px-[14px] py-2.5 \
+        min-h-[38px] text-[14px] text-ink transition-colors placeholder:text-dim \
+        hover:border-line-strong focus:outline-none focus:border-accent/40 \
+        focus:bg-surface focus:ring-[3px] focus:ring-accent/12";
+    let primary_button = "inline-flex items-center justify-center gap-2 rounded-md \
+        bg-accent px-[18px] py-2.5 min-h-[38px] text-[14px] font-semibold \
+        text-accent-fg shadow-card transition-colors hover:bg-accent-hover \
+        active:bg-accent-press disabled:opacity-50 disabled:cursor-not-allowed";
+    let actions_class = "flex items-center justify-end gap-3";
+    let error_class = "flex items-start gap-2 rounded-md border border-block/30 \
+        bg-block/10 px-4 py-3 text-[13px] text-danger before:content-['⚠']";
+    let banner_class = "flex items-center gap-2 rounded-md border border-line \
+        bg-surface px-4 py-3 text-[13px] text-muted";
+    let spinner_class = "size-[13px] shrink-0 rounded-full border-2 border-line-strong \
+        border-t-accent animate-spin";
+    let refine_box_class = "relative flex flex-col gap-4 rounded-lg border \
+        border-accent/40 bg-surface p-6 shadow-pop before:content-[''] before:absolute \
+        before:left-0 before:top-4 before:bottom-4 before:w-[3px] before:rounded-full \
+        before:bg-accent";
+    let refine_head_class = "flex items-center gap-2 text-[13px] font-bold uppercase \
+        tracking-[0.04em] text-accent";
+    let refine_step_class = "font-mono rounded-full border border-accent/40 bg-accent/12 \
+        px-2 py-0.5 text-[12px]";
+
     // Load the workspace list once and pick out the one named by the
     // `workspace` query param. This app is CSR-only, so component creation
     // and "on mount" are the same point in time.
@@ -272,9 +303,9 @@ pub fn NewRun() -> impl IntoView {
                     .into_iter()
                     .map(|repo| {
                         view! {
-                            <div class="repo-scope-row">
-                                <span class="workspace-name">{repo.name}</span>
-                                <span class="workspace-path mono">{repo.path}</span>
+                            <div class="flex flex-col gap-px min-w-0 px-3 py-2">
+                                <span class="text-[15px] font-semibold text-ink">{repo.name}</span>
+                                <span class="truncate font-mono text-[13px] text-dim">{repo.path}</span>
                             </div>
                         }
                     })
@@ -282,62 +313,76 @@ pub fn NewRun() -> impl IntoView {
             })
             .unwrap_or_default();
         view! {
-            <div class="new-run-form">
-                {error.map(|msg| view! { <p class="error">{msg}</p> })}
-                <div class="field goal">
-                    <label>"Goal"</label>
+            <div class="flex flex-col gap-6">
+                {error.map(|msg| view! { <p class=error_class>{msg}</p> })}
+                <div class=field_class>
+                    <label class="text-[14px] font-semibold text-ink">"Goal"</label>
                     <textarea
+                        class="w-full rounded-md border border-line-strong bg-surface p-4 \
+                            min-h-[148px] text-[15px] leading-[1.55] text-ink resize-y \
+                            transition-colors placeholder:text-dim hover:border-line-strong \
+                            focus:outline-none focus:border-accent/40 focus:bg-surface \
+                            focus:ring-[3px] focus:ring-accent/12"
                         rows="6"
                         placeholder="Describe what you want built..."
                         prop:value=move || goal_input.get()
                         on:input=move |ev| goal_input.set(event_target_value(&ev))
                     ></textarea>
-                    <p class="hint">
+                    <p class=hint_class>
                         "Claude Code breaks this into epics, then runs each one in its own git worktree."
                     </p>
                 </div>
 
-                <div class="field">
-                    <label>"Repos in scope"</label>
-                    <div class="repo-scope-list">
+                <div class=field_class>
+                    <label class=field_label>"Repos in scope"</label>
+                    <div class="flex flex-col gap-px rounded-md border border-line p-2 max-h-[220px] overflow-y-auto">
                         {repo_rows}
                     </div>
                 </div>
 
-                <div class="field-group">
-                    <div class="field-group-title">"Advanced options"</div>
-                    <div class="field full">
-                        <label>"Default verify command"</label>
+                <div class="grid grid-cols-1 min-[900px]:grid-cols-2 gap-4 rounded-lg border border-line bg-surface p-6">
+                    <div class="col-span-full text-[12px] font-bold uppercase tracking-[0.06em] text-dim">"Advanced options"</div>
+                    <div class="flex flex-col gap-2 col-span-full">
+                        <label class=field_label>"Default verify command"</label>
                         <input
                             type="text"
+                            class="w-full rounded-md border border-line bg-inset px-[14px] py-2.5 \
+                                min-h-[38px] font-mono text-[13px] text-ink transition-colors \
+                                placeholder:text-dim hover:border-line-strong focus:outline-none \
+                                focus:border-accent/40 focus:bg-surface focus:ring-[3px] \
+                                focus:ring-accent/12"
                             placeholder="make verify"
                             prop:value=move || verify_input.get()
                             on:input=move |ev| verify_input.set(event_target_value(&ev))
                         />
-                        <p class="hint">
+                        <p class=hint_class>
                             "The planner may choose a verify command per repo; this is the fallback."
                         </p>
                     </div>
                 </div>
 
-                <label class="field checkbox">
+                <label class="flex flex-row items-center gap-3 rounded-md border border-line bg-surface px-4 py-3 cursor-pointer text-[13px] font-medium text-ink">
                     <input
                         type="checkbox"
                         prop:checked=move || refine_enabled.get()
                         on:change=move |_| refine_enabled.update(|value| *value = !*value)
                     />
                     "Refine before planning"
-                    <span class="hint">"Ask clarifying questions first"</span>
+                    <span class="ml-auto text-[13px] leading-normal text-dim">"Ask clarifying questions first"</span>
                 </label>
 
-                <div class="new-run-actions">
-                    <button type="button" class="btn-ghost" on:click={
-                        let nav = navigate.clone();
-                        move |_| nav("/", Default::default())
-                    }>
+                <div class=actions_class>
+                    <button
+                        type="button"
+                        class="inline-flex items-center justify-center gap-2 rounded-md border border-transparent bg-transparent px-[18px] py-2.5 min-h-[38px] text-[14px] font-medium text-muted transition-colors hover:bg-inset hover:text-ink"
+                        on:click={
+                            let nav = navigate.clone();
+                            move |_| nav("/", Default::default())
+                        }
+                    >
                         "Cancel"
                     </button>
-                    <button type="button" class="btn-primary" on:click=on_start.clone()>
+                    <button type="button" class=primary_button on:click=on_start.clone()>
                         {move || {
                             if refine_enabled.get() { "Refine & plan" } else { "Start run" }
                         }}
@@ -348,9 +393,9 @@ pub fn NewRun() -> impl IntoView {
     };
 
     view! {
-        <div class="new-run-view">
-            <div class="page-head">
-                <h1>"New run"</h1>
+        <div class="mx-auto flex max-w-[720px] flex-col gap-6">
+            <div class="mb-6">
+                <h1 class="text-[28px] font-semibold tracking-tight">"New run"</h1>
                 {move || {
                     workspace
                         .get()
@@ -365,9 +410,9 @@ pub fn NewRun() -> impl IntoView {
                                 format!("{repo_count} repos")
                             };
                             view! {
-                                <p class="sub">
+                                <p class="text-[15px] text-muted mt-2">
                                     "Workspace " <strong>{ws.name.clone()}</strong> " \u{00b7} "
-                                    <span class="mono">{repo_summary}</span>
+                                    <span class="font-mono">{repo_summary}</span>
                                 </p>
                             }
                         })
@@ -375,11 +420,11 @@ pub fn NewRun() -> impl IntoView {
             </div>
             {move || {
                 if let Some(err) = load_error.get() {
-                    view! { <p class="error">{err}</p> }.into_any()
+                    view! { <p class=error_class>{err}</p> }.into_any()
                 } else if workspace.get().is_none() {
                     view! {
-                        <div class="run-status-banner">
-                            <span class="spinner"></span>
+                        <div class=banner_class>
+                            <span class=spinner_class></span>
                             "Loading workspace..."
                         </div>
                     }
@@ -390,8 +435,8 @@ pub fn NewRun() -> impl IntoView {
                         FlowState::Error(msg) => render_form(Some(msg)).into_any(),
                         FlowState::Submitting => {
                             view! {
-                                <div class="run-status-banner">
-                                    <span class="spinner"></span>
+                                <div class=banner_class>
+                                    <span class=spinner_class></span>
                                     "Starting the run..."
                                 </div>
                             }
@@ -406,10 +451,11 @@ pub fn NewRun() -> impl IntoView {
                                     let current_answer =
                                         answers.get(i).cloned().unwrap_or_default();
                                     view! {
-                                        <div class="refine-question">
-                                            <div class="q">{question}</div>
+                                        <div class="flex flex-col gap-2 pb-4 border-b border-line last-of-type:border-b-0 last-of-type:pb-0">
+                                            <div class="flex gap-2 font-medium text-ink before:content-['?'] before:shrink-0 before:size-5 before:grid before:place-content-center before:rounded-full before:bg-accent/12 before:text-accent before:font-bold before:text-[12px]">{question}</div>
                                             <input
                                                 type="text"
+                                                class=input_class
                                                 placeholder="Your answer..."
                                                 prop:value=current_answer
                                                 on:input=move |ev| {
@@ -432,16 +478,16 @@ pub fn NewRun() -> impl IntoView {
                                 })
                                 .collect();
                             view! {
-                                <div class="refine-answering">
-                                    <div class="refine-head">
-                                        <span class="step">"Step 1 / 2"</span>
+                                <div class=refine_box_class>
+                                    <div class=refine_head_class>
+                                        <span class=refine_step_class>"Step 1 / 2"</span>
                                         "Answer a few questions"
                                     </div>
                                     {rows}
-                                    <div class="new-run-actions">
+                                    <div class=actions_class>
                                         <button
                                             type="button"
-                                            class="btn-primary"
+                                            class=primary_button
                                             on:click=on_continue
                                         >
                                             "Continue"
@@ -453,17 +499,21 @@ pub fn NewRun() -> impl IntoView {
                         }
                         FlowState::Confirming { goal, .. } => {
                             view! {
-                                <div class="refine-confirm">
-                                    <div class="refine-head">
-                                        <span class="step">"Step 2 / 2"</span>
+                                <div class=refine_box_class>
+                                    <div class=refine_head_class>
+                                        <span class=refine_step_class>"Step 2 / 2"</span>
                                         "Confirm the refined goal"
                                     </div>
-                                    <p class="hint">
+                                    <p class=hint_class>
                                         "Edit as needed, then accept to begin planning."
                                     </p>
-                                    <div class="field">
+                                    <div class=field_class>
                                         <textarea
-                                            class="refined-goal"
+                                            class="w-full rounded-md border border-line bg-inset px-[14px] py-2.5 \
+                                                min-h-[110px] text-[15px] leading-[1.55] text-ink resize-y \
+                                                transition-colors placeholder:text-dim hover:border-line-strong \
+                                                focus:outline-none focus:border-accent/40 focus:bg-surface \
+                                                focus:ring-[3px] focus:ring-accent/12"
                                             rows="6"
                                             prop:value=goal
                                             on:input=move |ev| {
@@ -476,10 +526,10 @@ pub fn NewRun() -> impl IntoView {
                                             }
                                         ></textarea>
                                     </div>
-                                    <div class="new-run-actions">
+                                    <div class=actions_class>
                                         <button
                                             type="button"
-                                            class="btn-primary"
+                                            class=primary_button
                                             on:click=on_plan.clone()
                                         >
                                             "Accept & plan"

@@ -1,0 +1,149 @@
+/* Tailwind v4 entry for the agentic-tui web UI. This is the ONLY stylesheet;
+ * `@import "tailwindcss"` pulls in preflight (the reset), the theme, and
+ * utilities. The generated file is `tailwind.css` (gitignored); trunk bundles
+ * it via a pre_build hook. Class names are scanned from ./src (the Leptos
+ * views). Base element styles and the Poppins @font-face live at the bottom. */
+@import "tailwindcss";
+
+@source "./src";
+
+/* ---- Design tokens: a clean, modern light theme -------------------------
+ * Colors carry all the color; surfaces stay near-neutral. `--color-*` tokens
+ * generate bg-/text-/border- utilities; status tints use opacity modifiers,
+ * e.g. `bg-block/10 border-block/30 text-block`. */
+@theme {
+  /* Surfaces */
+  --color-page: #f5f6f8; /* app background            */
+  --color-surface: #ffffff; /* cards & panels          */
+  --color-inset: #f0f1f4; /* inputs, wells, hover      */
+  --color-raised: #e6e8ee; /* active / pressed         */
+
+  /* Lines */
+  --color-line: #e5e7ec;
+  --color-line-strong: #cdd1da;
+
+  /* Text */
+  --color-ink: #1a1d23; /* primary                    */
+  --color-muted: #5b616b; /* secondary                */
+  --color-dim: #8b909b; /* tertiary / metadata        */
+
+  /* Brand accent: amber (also the "in progress" status hue) */
+  --color-accent: #e08a2b;
+  --color-accent-hover: #c9781f;
+  --color-accent-press: #b36a18;
+  --color-accent-fg: #241a06; /* text on a filled amber surface */
+
+  /* Status semantics */
+  --color-todo: #6b7280;
+  --color-prog: #c9781f;
+  --color-review: #7c5ce6;
+  --color-done: #1f9d57;
+  --color-block: #d64545;
+  --color-danger: #dc4c4a;
+
+  /* Typography */
+  --font-sans: "Poppins", ui-sans-serif, system-ui, -apple-system,
+    BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code",
+    Menlo, Consolas, "Liberation Mono", monospace;
+
+  /* Radii */
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Elevation: soft, low-contrast shadows */
+  --shadow-card: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --shadow-pop: 0 4px 14px rgba(16, 24, 40, 0.08);
+  --shadow-float: 0 12px 34px rgba(16, 24, 40, 0.12);
+
+  /* Custom animations (spin + pulse are built in). Use as `animate-pulse-dot`
+   * for phase dots and `animate-log-flash` for a newly appended log line. */
+  --animate-pulse-dot: pulse-dot 1.4s ease-in-out infinite;
+  --animate-log-flash: log-flash 0.6s ease-out;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.4;
+    transform: scale(0.8);
+  }
+}
+
+@keyframes log-flash {
+  from {
+    background-color: color-mix(in srgb, var(--color-accent) 12%, transparent);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* ---- Brand font: Poppins (bundle .woff2 under crates/web/fonts/ for offline;
+ * falls back to the system sans stack if absent) ------------------------- */
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: local("Poppins"), url("fonts/poppins-400.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: local("Poppins Medium"), url("fonts/poppins-500.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: local("Poppins SemiBold"), url("fonts/poppins-600.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Poppins";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: local("Poppins Bold"), url("fonts/poppins-700.woff2") format("woff2");
+}
+
+/* ---- Base element styles (appended to Tailwind's `base` layer, so they win
+ * over preflight but lose to utilities) ---------------------------------- */
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
+  body {
+    background-color: var(--color-page);
+    color: var(--color-ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  /* Native checkbox, tinted to the brand accent */
+  input[type="checkbox"] {
+    width: 1rem;
+    height: 1rem;
+    accent-color: var(--color-accent);
+    cursor: pointer;
+  }
+  ::selection {
+    background-color: color-mix(in srgb, var(--color-accent) 22%, transparent);
+  }
+  /* Quiet, on-surface scrollbars */
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: var(--color-line-strong) transparent;
+  }
+}

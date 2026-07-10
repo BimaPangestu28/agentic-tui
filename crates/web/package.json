@@ -1,0 +1,13 @@
+{
+  "name": "agentic-tui-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tailwind CSS build for the agentic-tui web UI.",
+  "scripts": {
+    "build:css": "tailwindcss -i input.css -o tailwind.css --minify"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.0.0",
+    "tailwindcss": "^4.0.0"
+  }
+}

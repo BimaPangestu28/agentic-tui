@@ -43,10 +43,24 @@ fn status_label(status: EpicStatus) -> &'static str {
 /// The report-row status pill class: green for merged, neutral for skipped,
 /// red for anything blocked (failed / conflict).
 fn report_status_class(status: EpicStatus) -> &'static str {
+    // Base pill shared by every report status; the trailing color trio is the
+    // only part that varies by status.
     match status {
-        EpicStatus::Merged => "report-status done",
-        EpicStatus::Skipped => "report-status skipped",
-        _ => "report-status blocked",
+        EpicStatus::Merged => {
+            "inline-flex items-center gap-1.5 justify-self-start rounded-full \
+             border px-[9px] py-[3px] text-[12px] font-semibold whitespace-nowrap \
+             text-done bg-done/12 border-done/30"
+        }
+        EpicStatus::Skipped => {
+            "inline-flex items-center gap-1.5 justify-self-start rounded-full \
+             border px-[9px] py-[3px] text-[12px] font-semibold whitespace-nowrap \
+             text-dim bg-todo/10 border-todo/30"
+        }
+        _ => {
+            "inline-flex items-center gap-1.5 justify-self-start rounded-full \
+             border px-[9px] py-[3px] text-[12px] font-semibold whitespace-nowrap \
+             text-block bg-block/10 border-block/30"
+        }
     }
 }
 
@@ -75,6 +89,42 @@ fn epic_card(
     let reason = epic.reason.clone();
     let epic_id = epic.id.clone();
 
+    // A card is styled by the column it sits in, which is fixed by its status.
+    // `left_accent` tints the 3px left rail, `card_glow` adds the running-card
+    // ring, and `status_pill` colors the status chip to match the column.
+    let (left_accent, card_glow, status_pill) = match kanban_column(epic.status) {
+        KanbanColumn::Todo => (
+            "border-l-todo/30",
+            "",
+            "text-todo bg-todo/10 border-todo/30",
+        ),
+        KanbanColumn::InProgress => (
+            "border-l-prog",
+            "ring-1 ring-prog/40",
+            "text-prog bg-prog/12 border-prog/40",
+        ),
+        KanbanColumn::Review => (
+            "border-l-review",
+            "",
+            "text-review bg-review/12 border-review/30",
+        ),
+        KanbanColumn::Done => ("border-l-done", "", "text-done bg-done/12 border-done/30"),
+        KanbanColumn::Blocked => (
+            "border-l-block",
+            "",
+            "text-block bg-block/10 border-block/30",
+        ),
+    };
+    let card_class = format!(
+        "flex flex-col gap-2 rounded-md border border-line border-l-[3px] {left_accent} \
+         bg-inset py-3 pr-3 pl-4 shadow-card transition hover:-translate-y-px hover:bg-raised \
+         {card_glow}"
+    );
+    let status_class = format!(
+        "inline-flex items-center gap-1.5 shrink-0 ml-auto rounded-full border px-2 py-[3px] \
+         text-[12px] font-semibold whitespace-nowrap {status_pill}"
+    );
+
     let retrying = RwSignal::new(false);
     let retry_error = RwSignal::new(None::<String>);
     let on_retry = move |_| {
@@ -94,23 +144,51 @@ fn epic_card(
     };
 
     view! {
-        <div class="kanban-card">
-            <div class="kanban-card-title">{epic.title.clone()}</div>
-            {hold_label.map(|label| view! { <span class="kanban-card-hold">{label}</span> })}
-            {reason.map(|text| view! { <div class="kanban-card-reason">{text}</div> })}
-            <div class="kanban-card-meta">
-                <span class="kanban-card-id">{epic.id.clone()}</span>
+        <div class=card_class>
+            <div class="text-[13px] font-semibold text-ink leading-[1.35]">{epic.title.clone()}</div>
+            {hold_label
+                .map(|label| {
+                    view! {
+                        <span class="inline-flex items-center gap-1.5 self-start rounded-full \
+                        border border-dashed border-line-strong bg-surface px-2 py-0.5 \
+                        text-[12px] font-semibold text-dim">
+                            {label}
+                        </span>
+                    }
+                })}
+            {reason
+                .map(|text| {
+                    view! {
+                        <div class="rounded-[5px] border border-block/30 bg-block/10 px-2 py-[5px] \
+                        text-[12px] leading-[1.4] text-block">
+                            {text}
+                        </div>
+                    }
+                })}
+            <div class="flex flex-wrap items-center gap-2">
+                <span class="font-mono text-[12px] text-dim whitespace-nowrap">
+                    {epic.id.clone()}
+                </span>
                 {(!epic.repo.is_empty())
-                    .then(|| view! { <span class="kanban-card-repo">{epic.repo.clone()}</span> })}
-                <span class="kanban-card-status">{status_label(epic.status)}</span>
+                    .then(|| {
+                        view! {
+                            <span class="font-mono text-[12px] text-dim whitespace-nowrap">
+                                {epic.repo.clone()}
+                            </span>
+                        }
+                    })}
+                <span class=status_class>{status_label(epic.status)}</span>
             </div>
             {can_retry
                 .then(|| {
                     view! {
-                        <div class="kanban-card-actions">
+                        <div class="flex justify-end">
                             <button
                                 type="button"
-                                class="btn-retry"
+                                class="rounded-[5px] border border-line-strong bg-surface \
+                                px-[14px] py-1.5 text-[12px] font-semibold text-ink \
+                                transition-colors hover:bg-block/10 hover:border-block/30 \
+                                hover:text-block disabled:opacity-60 disabled:cursor-default"
                                 disabled=move || retrying.get()
                                 on:click=on_retry
                             >
@@ -120,7 +198,13 @@ fn epic_card(
                     }
                 })}
             {move || {
-                retry_error.get().map(|err| view! { <p class="kanban-card-error">{err}</p> })
+                retry_error
+                    .get()
+                    .map(|err| {
+                        view! {
+                            <p class="text-[12px] leading-[1.4] text-danger">{err}</p>
+                        }
+                    })
             }}
         </div>
     }
@@ -158,50 +242,74 @@ fn kanban_column_view(
             epic_card(epic, hold_label, run_id.clone(), retry_enabled)
         })
         .collect();
+    // The column header text is tinted to match the column's status color.
+    let header_color = match column {
+        KanbanColumn::Todo => "text-todo",
+        KanbanColumn::InProgress => "text-prog",
+        KanbanColumn::Review => "text-review",
+        KanbanColumn::Done => "text-done",
+        KanbanColumn::Blocked => "text-block",
+    };
+    let header_class = format!(
+        "flex items-center gap-2 sticky top-0 px-4 py-3 text-[13px] font-semibold \
+         border-b border-line {header_color}"
+    );
     view! {
-        <div class="kanban-column">
-            <h3>{label} " " <span class="count">{count}</span></h3>
-            <div class="kanban-cards">{cards}</div>
+        <div class="flex flex-1 flex-col min-w-[224px] max-h-[640px] snap-start rounded-lg border border-line bg-surface">
+            <h3 class=header_class>
+                {label} " "
+                <span class="ml-auto font-mono text-[12px] text-dim bg-inset rounded-full px-2 py-px">
+                    {count}
+                </span>
+            </h3>
+            <div class="flex flex-col gap-3 p-3 overflow-y-auto">{cards}</div>
         </div>
     }
 }
 
 /// One log line, tinted by a leading `[tag]` convention when present.
 fn log_line_view(line: String) -> AnyView {
+    // Every line shares the same frame; only the body text color (for errors)
+    // and the leading `[tag]` color change by line type.
+    let line_base = "px-6 py-px whitespace-pre-wrap break-words border-l-2 border-transparent \
+                     transition-colors hover:bg-surface hover:border-line-strong";
     let lower = line.to_lowercase();
-    let class = if lower.contains("merged") || lower.contains("passed") || lower.contains("ok (") {
-        "log-line done"
-    } else if lower.contains("conflict") || lower.contains("error") || lower.contains("fail") {
-        "log-line err"
-    } else if lower.starts_with("[plan]") {
-        "log-line plan"
-    } else {
-        "log-line"
-    };
+    let (line_class, tag_class) =
+        if lower.contains("merged") || lower.contains("passed") || lower.contains("ok (") {
+            (format!("{line_base} text-muted"), "text-done")
+        } else if lower.contains("conflict") || lower.contains("error") || lower.contains("fail") {
+            (format!("{line_base} text-danger"), "text-danger")
+        } else if lower.starts_with("[plan]") {
+            (format!("{line_base} text-muted"), "text-review")
+        } else {
+            (format!("{line_base} text-muted"), "text-accent")
+        };
     let parsed = line.strip_prefix('[').and_then(|rest| {
         rest.find(']')
             .map(|idx| (format!("[{}]", &rest[..idx]), rest[idx + 1..].to_string()))
     });
     match parsed {
         Some((tag, body)) => view! {
-            <div class=class>
-                <span class="tag">{tag}</span>
+            <div class=line_class>
+                <span class=tag_class>{tag}</span>
                 {body}
             </div>
         }
         .into_any(),
-        None => view! { <div class=class>{line}</div> }.into_any(),
+        None => view! { <div class=line_class>{line}</div> }.into_any(),
     }
 }
 
 /// One report row: an epic's id, title, status pill, and cost.
 fn report_row(epic: &EpicView) -> impl IntoView {
     view! {
-        <div class="report-row">
-            <span class="report-id">{epic.id.clone()}</span>
-            <span class="report-title">{epic.title.clone()}</span>
+        <div class="grid grid-cols-[84px_1fr_auto_auto] items-center gap-4 py-3 border-b border-line last:border-b-0">
+            <span class="font-mono text-[12px] text-dim">{epic.id.clone()}</span>
+            <span class="text-[13px] text-ink min-w-0">{epic.title.clone()}</span>
             <span class=report_status_class(epic.status)>{status_label(epic.status)}</span>
-            <span class="report-cost">{format!("${:.2}", epic.cost)}</span>
+            <span class="font-mono text-[13px] text-muted justify-self-end">
+                {format!("${:.2}", epic.cost)}
+            </span>
         </div>
     }
 }
@@ -245,13 +353,14 @@ fn final_report(app: &App) -> impl IntoView {
             let group_merged = epics.iter().any(|epic| epic.status == EpicStatus::Merged);
             let rows: Vec<_> = epics.iter().map(report_row).collect();
             view! {
-                <div class="report-group">
-                    <h4 class="report-group-heading">{heading}</h4>
-                    <div class="report-rows">{rows}</div>
+                <div class="flex flex-col gap-2">
+                    <h4 class="font-mono text-[13px] font-semibold text-muted">{heading}</h4>
+                    <div class="flex flex-col">{rows}</div>
                     {group_merged
                         .then(|| {
                             view! {
-                                <div class="report-hint">
+                                <div class="flex items-center gap-2 rounded-md border border-done/30 \
+                                bg-done/12 px-4 py-3 text-[13px] text-muted">
                                     "Merged epics are on this repo's integration branch."
                                 </div>
                             }
@@ -262,18 +371,31 @@ fn final_report(app: &App) -> impl IntoView {
         .collect();
 
     view! {
-        <div class="final-report">
-            <h3>"Run finished"</h3>
-            {app.error.clone().map(|err| view! { <p class="error">{err}</p> })}
+        <div class="flex flex-col gap-4 rounded-lg border border-line bg-surface p-6 shadow-card">
+            <h3 class="flex items-center gap-2 text-[18px] font-semibold">"Run finished"</h3>
+            {app
+                .error
+                .clone()
+                .map(|err| {
+                    view! {
+                        <p class="flex items-start gap-2 rounded-md border border-block/30 \
+                        bg-block/10 px-4 py-3 text-[13px] text-danger before:content-['⚠']">
+                            {err}
+                        </p>
+                    }
+                })}
             {groups}
-            <div class="report-total">
+            <div class="flex items-baseline justify-between pt-3 border-t border-line-strong text-[15px]">
                 <span>"Total cost"</span>
-                <span class="amount">{format!("${:.4}", app.total_cost)}</span>
+                <span class="font-mono font-bold text-ink text-[18px]">
+                    {format!("${:.4}", app.total_cost)}
+                </span>
             </div>
             {any_merged
                 .then(|| {
                     view! {
-                        <div class="report-hint">
+                        <div class="flex items-center gap-2 rounded-md border border-done/30 \
+                        bg-done/12 px-4 py-3 text-[13px] text-muted">
                             "Merged work is on this workspace's integration branch. Review it and open a PR when ready."
                         </div>
                     }
@@ -336,18 +458,38 @@ pub fn Run() -> impl IntoView {
     };
 
     view! {
-        <div class="run-view">
+        <div class="flex flex-col gap-6">
             {move || {
-                abort_error.get().map(|err| view! { <p class="error">{err}</p> })
+                abort_error
+                    .get()
+                    .map(|err| {
+                        view! {
+                            <p class="flex items-start gap-2 rounded-md border border-block/30 \
+                            bg-block/10 px-4 py-3 text-[13px] text-danger">
+                                {err}
+                            </p>
+                        }
+                    })
             }}
             {move || {
-                resume_error.get().map(|err| view! { <p class="error">{err}</p> })
+                resume_error
+                    .get()
+                    .map(|err| {
+                        view! {
+                            <p class="flex items-start gap-2 rounded-md border border-block/30 \
+                            bg-block/10 px-4 py-3 text-[13px] text-danger">
+                                {err}
+                            </p>
+                        }
+                    })
             }}
             {move || match app.get() {
                 None => {
                     view! {
-                        <div class="run-status-banner">
-                            <span class="spinner"></span>
+                        <div class="flex items-center gap-2 rounded-md border border-line \
+                        bg-surface px-4 py-3 text-[13px] text-muted">
+                            <span class="size-[13px] animate-spin rounded-full border-2 \
+                            border-line-strong border-t-accent"></span>
                             "Connecting to the run..."
                         </div>
                     }
@@ -406,12 +548,22 @@ pub fn Run() -> impl IntoView {
                             .clone()
                             .filter(|_| can_resume)
                             .map(|reason| {
-                                view! { <div class="run-status-banner interrupted">{reason}</div> }
+                                view! {
+                                    <div class="flex items-center gap-2 rounded-md border \
+                                    border-block/30 bg-block/10 px-4 py-3 text-[13px] text-danger">
+                                        {reason}
+                                    </div>
+                                }
                             })}
-                        <div class="run-header">
+                        <div class="grid grid-cols-[1fr_auto] items-start gap-x-6 gap-y-4 \
+                        rounded-lg border border-line bg-surface p-6 shadow-card">
                             <div>
-                                <div class="run-goal">{snapshot.goal.clone()}</div>
-                                <div class="run-workspace">
+                                <div class="max-w-[68ch] whitespace-pre-wrap text-[18px] \
+                                font-semibold leading-[1.4] tracking-tight text-ink">
+                                    {snapshot.goal.clone()}
+                                </div>
+                                <div class="mt-2 inline-flex items-center gap-1.5 font-mono \
+                                text-[13px] text-muted">
                                     {snapshot.workspace.clone()}
                                     {(repo_count > 0)
                                         .then(|| format!(" \u{00b7} {repo_count} repos"))}
@@ -420,10 +572,15 @@ pub fn Run() -> impl IntoView {
                             {(!is_finished)
                                 .then(|| {
                                     view! {
-                                        <div class="run-actions">
+                                        <div class="col-start-2 row-start-1 flex items-center gap-2">
                                             <button
                                                 type="button"
-                                                class="btn-danger"
+                                                class="inline-flex items-center justify-center gap-2 \
+                                                rounded-md border border-block/30 bg-transparent \
+                                                px-[18px] py-2.5 min-h-[38px] text-[14px] font-medium \
+                                                text-danger transition-colors hover:bg-block/10 \
+                                                hover:border-danger disabled:opacity-50 \
+                                                disabled:cursor-not-allowed"
                                                 disabled=move || aborting.get()
                                                 on:click=on_abort.clone()
                                             >
@@ -437,10 +594,15 @@ pub fn Run() -> impl IntoView {
                             {can_resume
                                 .then(|| {
                                     view! {
-                                        <div class="run-actions">
+                                        <div class="col-start-2 row-start-1 flex items-center gap-2">
                                             <button
                                                 type="button"
-                                                class="btn-primary"
+                                                class="inline-flex items-center justify-center gap-2 \
+                                                rounded-md bg-accent px-[18px] py-2.5 min-h-[38px] \
+                                                text-[14px] font-semibold text-accent-fg shadow-card \
+                                                transition-colors hover:bg-accent-hover \
+                                                active:bg-accent-press disabled:opacity-50 \
+                                                disabled:cursor-not-allowed"
                                                 disabled=move || resuming.get()
                                                 on:click=on_resume.clone()
                                             >
@@ -451,15 +613,21 @@ pub fn Run() -> impl IntoView {
                                         </div>
                                     }
                                 })}
-                            <div class="run-cost">
-                                <span class="spent">
+                            <div class="col-span-2 flex items-baseline gap-1.5 font-mono \
+                            text-[13px] text-muted">
+                                <span class="text-ink font-semibold">
                                     {format!("${:.4}", snapshot.total_cost)}
                                 </span>
-                                <span class="run-cost-label">" spent"</span>
+                                <span class="text-dim">" spent"</span>
                             </div>
                         </div>
-                        <div class="kanban-board">{columns}</div>
-                        <div class="log-pane">{log_lines}</div>
+                        <div class="flex gap-4 overflow-x-auto pb-3 snap-x snap-proximity">
+                            {columns}
+                        </div>
+                        <div class="max-h-[300px] overflow-y-auto rounded-lg border border-line \
+                        bg-page py-3 font-mono text-[13px] leading-[1.7] scroll-smooth">
+                            {log_lines}
+                        </div>
                         {is_finished.then(|| final_report(&snapshot))}
                     }
                         .into_any()

@@ -43,32 +43,42 @@ pub fn AppBar() -> impl IntoView {
     };
     let active_count = move || active_runs().len();
 
+    // Tailwind utilities. `nav-link` / `chip` naming kept only where a shared
+    // look repeats; everything else is inline utilities. The runs menu opens on
+    // `:focus-within` (the trigger is a real button), mirrored with `group` +
+    // `group-focus-within`.
+    let nav_link = "inline-flex items-center rounded-md px-3 py-1.5 text-[13px] \
+                    font-medium text-muted no-underline transition-colors \
+                    hover:bg-inset hover:text-ink";
     view! {
-        <header class="app-bar">
-            <A href="/">
-                <span class="hex">"\u{2b21}"</span>
+        <header class="sticky top-0 z-50 flex h-[52px] items-center gap-3 border-b border-line bg-page/80 px-6 backdrop-blur-md backdrop-saturate-150">
+            <A attr:class="inline-flex items-center gap-2 text-[15px] font-semibold tracking-tight text-ink no-underline" href="/">
+                <span class="text-[18px] leading-none text-accent">"\u{2b21}"</span>
                 " Agentic Orchestrator"
             </A>
-            <nav style="margin-left: auto;">
-                <A attr:class="btn btn-ghost btn-sm" href="/workspaces">
+            <nav class="ml-auto flex items-center gap-1">
+                <A attr:class=nav_link href="/workspaces">
                     "Workspaces"
                 </A>
-                <A attr:class="btn btn-ghost btn-sm" href="/workspaces">
+                <A attr:class=nav_link href="/workspaces">
                     "New run"
                 </A>
             </nav>
-            <div class="runs-switcher">
-                <button type="button" class="trigger">
+            <div class="group relative">
+                <button
+                    type="button"
+                    class="inline-flex items-center gap-2 rounded-full border border-line-strong bg-inset px-3 py-1.5 text-[13px] font-medium text-ink transition-colors hover:bg-raised"
+                >
                     <Show when=move || { active_count() > 0 }>
-                        <span class="live-dot"></span>
+                        <span class="size-2 animate-pulse rounded-full bg-prog"></span>
                     </Show>
                     <span>{move || format!("{} running", active_count())}</span>
-                    <span class="caret">"\u{25be}"</span>
+                    <span class="text-[10px] text-dim">"\u{25be}"</span>
                 </button>
-                <div class="runs-menu">
-                    <div class="runs-menu-head">
+                <div class="absolute right-0 top-[calc(100%+8px)] z-[60] hidden w-[340px] rounded-lg border border-line-strong bg-surface p-2 shadow-float group-focus-within:block">
+                    <div class="flex items-center justify-between px-3 pb-3 pt-2 text-[12px] font-bold uppercase tracking-wider text-dim">
                         <span>"Active runs"</span>
-                        <A attr:class="btn btn-ghost btn-sm" href="/">
+                        <A attr:class=nav_link href="/">
                             "View all"
                         </A>
                     </div>
@@ -78,18 +88,23 @@ pub fn AppBar() -> impl IntoView {
                         children=move |run: RunSummary| {
                             let href = format!("/run/{}", run.id);
                             view! {
-                                <A attr:class="runs-menu-item" href=href>
-                                    <span class="phase-dot"></span>
-                                    <span class="col">
-                                        <span class="ws">
+                                <A
+                                    attr:class="grid grid-cols-[auto_1fr_auto] items-center gap-3 rounded-md p-3 text-inherit no-underline hover:bg-inset"
+                                    href=href
+                                >
+                                    <span class="size-2.5 animate-pulse rounded-full bg-prog"></span>
+                                    <span class="min-w-0">
+                                        <span class="font-mono text-[13px] font-semibold text-ink">
                                             {run.workspace.clone()}
-                                            <span class="ws-repos">
+                                            <span class="font-medium text-dim">
                                                 {format!(" \u{00b7} {} repos", run.repos.len())}
                                             </span>
                                         </span>
-                                        <span class="goal-snip">{run.goal.clone()}</span>
+                                        <span class="block truncate text-[12px] text-dim">
+                                            {run.goal.clone()}
+                                        </span>
                                     </span>
-                                    <span class="mini-budget">
+                                    <span class="font-mono text-[12px] text-muted">
                                         {format!("${:.2}", run.total_cost)}
                                     </span>
                                 </A>
