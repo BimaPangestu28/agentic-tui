@@ -21,11 +21,16 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
       - name: Install trunk
         run: cargo install --locked trunk
 
-      - name: Build the web UI
-        run: cd crates/web && trunk build --release
+      - name: Build the web UI (installs Tailwind, runs the pre_build hook)
+        run: cd crates/web && npm install --no-audit --no-fund && trunk build --release
 
       - name: Format check
         run: make fmt-check
@@ -59,16 +64,16 @@ jobs:
       - name: Cache cargo build
         uses: Swatinem/rust-cache@v2
 
-      - name: Install trunk
-        run: cargo install --locked trunk
-
-      - name: Build the release binary (embeds the web UI)
-        run: make release
-
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
           node-version: 20
+
+      - name: Install trunk
+        run: cargo install --locked trunk
+
+      - name: Build the release binary (installs Tailwind, embeds the web UI)
+        run: make release
 
       - name: Install Playwright and its browser
         run: |

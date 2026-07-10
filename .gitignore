@@ -24,3 +24,7 @@
 /.agentic-refine.json
 /.agentic-worktrees/
 /.worktrees/
+
+# Tailwind / web toolchain
+/crates/web/node_modules/
+/crates/web/tailwind.css

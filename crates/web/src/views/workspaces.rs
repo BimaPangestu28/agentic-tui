@@ -138,20 +138,38 @@ pub fn Workspaces() -> impl IntoView {
         });
     };
 
+    // Shared utility strings for elements that repeat the same look across the
+    // view (mirrors the `nav_link` pattern in `components.rs`). All are
+    // `&'static str`, so the `move` closures below capture them by copy.
+    let error_class = "flex items-start gap-2 rounded-md border border-block/30 \
+                       bg-block/10 px-4 py-3 text-[13px] text-danger \
+                       before:content-['\u{26a0}']";
+    let mono_input = "w-full rounded-md border border-line bg-inset px-[14px] py-2.5 \
+                      min-h-[38px] font-mono text-[13px] text-ink transition-colors \
+                      placeholder:text-dim hover:border-line-strong focus:outline-none \
+                      focus:border-accent/40 focus:bg-surface focus:ring-[3px] \
+                      focus:ring-accent/12";
+    let btn_primary = "inline-flex items-center justify-center gap-2 rounded-md \
+                       bg-accent px-[18px] py-2.5 min-h-[38px] text-[14px] font-semibold \
+                       text-accent-fg shadow-card transition-colors hover:bg-accent-hover \
+                       active:bg-accent-press disabled:opacity-50 disabled:cursor-not-allowed";
+
     view! {
-        <div class="workspaces-view">
-            <div class="page-head">
-                <h1>"Workspaces"</h1>
-                <p class="sub">"Pick a repository to run against, or add new ones."</p>
+        <div class="flex flex-col gap-8">
+            <div class="mb-6">
+                <h1 class="text-[28px] font-semibold tracking-tight">"Workspaces"</h1>
+                <p class="mt-2 text-[15px] text-muted">
+                    "Pick a repository to run against, or add new ones."
+                </p>
             </div>
 
             {move || {
                 load_error
                     .get()
-                    .map(|err| view! { <p class="error">{err}</p> })
+                    .map(|err| view! { <p class=error_class>{err}</p> })
             }}
 
-            <ul class="workspace-list">
+            <ul class="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2 min-[900px]:grid-cols-4 empty:hidden">
                 <For
                     each=move || workspaces.get()
                     key=|workspace| workspace.name.clone()
@@ -166,10 +184,22 @@ pub fn Workspaces() -> impl IntoView {
                             n => format!("{n} repos"),
                         };
                         view! {
-                            <li class="workspace-row">
-                                <A href=href>
-                                    <span class="workspace-name">{workspace.name.clone()}</span>
-                                    <span class="workspace-path">{summary}</span>
+                            <li class="flex">
+                                <A
+                                    attr:class="flex w-full flex-col gap-2 rounded-md border \
+                                                border-line bg-surface p-4 text-inherit \
+                                                no-underline cursor-pointer transition-colors \
+                                                hover:border-accent/40 hover:bg-inset \
+                                                focus-visible:outline-none focus-visible:ring-2 \
+                                                focus-visible:ring-accent focus-visible:ring-offset-2 \
+                                                focus-visible:ring-offset-page"
+                                    href=href
+                                >
+                                    <span class="flex items-center gap-2">
+                                        <span class="shrink-0 text-[15px] text-accent opacity-[0.85]">"\u{2b21}"</span>
+                                        <span class="text-[15px] font-semibold text-ink">{workspace.name.clone()}</span>
+                                    </span>
+                                    <span class="break-all font-mono text-[13px] text-dim">{summary}</span>
                                 </A>
                             </li>
                         }
@@ -177,15 +207,15 @@ pub fn Workspaces() -> impl IntoView {
                 />
             </ul>
 
-            <div class="add-workspace-panel">
-                <h2>"Add workspace"</h2>
-                <p class="hint">
+            <div class="flex flex-col gap-4 rounded-lg border border-line bg-surface p-6 shadow-card">
+                <h2 class="text-[18px] font-semibold tracking-tight">"Add workspace"</h2>
+                <p class="text-[13px] leading-normal text-dim">
                     "Point at a folder and scan for git repositories inside it."
                 </p>
-                <div class="scan-row">
+                <div class="flex flex-col items-stretch gap-3 min-[560px]:flex-row">
                     <input
                         type="text"
-                        class="mono"
+                        class=mono_input
                         placeholder="/path/to/projects"
                         prop:value=move || root_input.get()
                         on:input=move |ev| {
@@ -194,7 +224,7 @@ pub fn Workspaces() -> impl IntoView {
                     />
                     <button
                         type="button"
-                        class="btn-primary"
+                        class=format!("{btn_primary} whitespace-nowrap")
                         disabled=move || scanning.get()
                         on:click=on_scan
                     >
@@ -203,26 +233,26 @@ pub fn Workspaces() -> impl IntoView {
                 </div>
 
                 {move || {
-                    scan_error.get().map(|err| view! { <p class="error">{err}</p> })
+                    scan_error.get().map(|err| view! { <p class=error_class>{err}</p> })
                 }}
 
                 {move || {
                     (!scan_results.get().is_empty())
                         .then(|| {
                             view! {
-                                <div class="scan-results">
-                                    <div class="scan-results-head">
+                                <div class="flex flex-col gap-1 border-t border-line pt-4">
+                                    <div class="mb-1 flex items-center justify-between text-[13px] text-muted">
                                         <span>
                                             {move || {
                                                 format!("{} repositories found", scan_results.get().len())
                                             }}
                                         </span>
                                     </div>
-                                    <div class="field">
-                                        <label>"Workspace name"</label>
+                                    <div class="flex flex-col gap-2">
+                                        <label class="text-[13px] font-semibold text-ink">"Workspace name"</label>
                                         <input
                                             type="text"
-                                            class="mono"
+                                            class=mono_input
                                             placeholder="e.g. platform-repos"
                                             prop:value=move || group_name.get()
                                             on:input=move |ev| {
@@ -238,7 +268,7 @@ pub fn Workspaces() -> impl IntoView {
                                             let path_for_checked = repo.path.clone();
                                             let path_for_toggle = repo.path.clone();
                                             view! {
-                                                <label class="scan-result-row">
+                                                <label class="flex items-center gap-3 rounded-md p-3 transition-colors hover:bg-inset">
                                                     <input
                                                         type="checkbox"
                                                         prop:checked=move || {
@@ -248,9 +278,9 @@ pub fn Workspaces() -> impl IntoView {
                                                             toggle_checked(path_for_toggle.clone());
                                                         }
                                                     />
-                                                    <span class="info">
-                                                        <span class="workspace-name">{repo.name.clone()}</span>
-                                                        <span class="workspace-path">{repo.path.clone()}</span>
+                                                    <span class="flex min-w-0 flex-col gap-px">
+                                                        <span class="text-[14px] font-semibold text-ink">{repo.name.clone()}</span>
+                                                        <span class="truncate font-mono text-[13px] text-dim">{repo.path.clone()}</span>
                                                     </span>
                                                 </label>
                                             }
@@ -258,13 +288,13 @@ pub fn Workspaces() -> impl IntoView {
                                     />
 
                                     {move || {
-                                        save_error.get().map(|err| view! { <p class="error">{err}</p> })
+                                        save_error.get().map(|err| view! { <p class=error_class>{err}</p> })
                                     }}
 
-                                    <div class="new-run-actions">
+                                    <div class="flex items-center justify-end gap-3">
                                         <button
                                             type="button"
-                                            class="btn-primary"
+                                            class=btn_primary
                                             disabled=move || saving.get()
                                             on:click=on_save
                                         >

@@ -24,8 +24,8 @@ help: ## Show this help message
 		| awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
 
 .PHONY: web
-web: ## Build the Leptos web UI with trunk (must run before the server can embed it)
-	cd crates/web && trunk build --release
+web: ## Build the Leptos web UI with trunk (installs Tailwind deps, then trunk runs the Tailwind pre_build hook)
+	cd crates/web && npm install --no-audit --no-fund && trunk build --release
 
 .PHONY: build
 build: web ## Build the web UI, then a debug server binary
