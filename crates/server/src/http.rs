@@ -20,7 +20,7 @@ use shared::{
 use tokio::sync::broadcast;
 
 use crate::refine;
-use crate::run::{self, RetryError, StartError};
+use crate::run::{self, ResumeError, RetryError, StartError};
 use crate::workspace::{self, Repo, Workspace};
 
 #[derive(RustEmbed)]
@@ -130,6 +130,21 @@ async fn retry_epic(Path((id, epic_id)): Path<(String, String)>) -> Response {
     }
 }
 
+/// `POST /api/runs/{id}/resume`: resume a finished run that still has
+/// unfinished epics, re-running everything not yet merged. 404 for an unknown
+/// run, 409 while the run is still active, 400 if there is nothing to resume or
+/// the saved plan could not be read.
+async fn resume_run(Path(id): Path<String>) -> Response {
+    match run::resume(&id).await {
+        Ok(()) => StatusCode::OK.into_response(),
+        Err(e @ ResumeError::NotFound) => (StatusCode::NOT_FOUND, e.message()).into_response(),
+        Err(e @ ResumeError::RunActive) => (StatusCode::CONFLICT, e.message()).into_response(),
+        Err(e @ (ResumeError::NotResumable | ResumeError::NoPlan)) => {
+            (StatusCode::BAD_REQUEST, e.message()).into_response()
+        }
+    }
+}
+
 /// `GET /api/runs/{id}/events`: upgrade to a WebSocket, send the current
 /// `App` snapshot as JSON text, then forward every broadcast snapshot as JSON
 /// text until the channel closes.
@@ -221,6 +236,7 @@ pub fn router() -> Router {
         .route("/api/runs", get(list_runs).post(start_run))
         .route("/api/runs/{id}/abort", post(abort_run))
         .route("/api/runs/{id}/epics/{epic_id}/retry", post(retry_epic))
+        .route("/api/runs/{id}/resume", post(resume_run))
         .route("/api/runs/{id}/events", get(run_events))
         .route("/api/refine/questions", post(refine_questions))
         .route("/api/refine/finalize", post(refine_finalize))
@@ -232,6 +248,8 @@ pub fn router() -> Router {
 /// to pin the bind address (host:port) instead of the default ephemeral port;
 /// the browser smoke test uses this to reach a known URL.
 pub async fn serve(open_browser: bool) -> anyhow::Result<()> {
+    // Recover runs from previous sessions before accepting any request.
+    run::rehydrate().await;
     let bind_addr = std::env::var("AGENTIC_ADDR").unwrap_or_else(|_| "127.0.0.1:0".to_string());
     let listener = tokio::net::TcpListener::bind(&bind_addr).await?;
     let addr = listener.local_addr()?;
