@@ -2,9 +2,9 @@
 //! criteria, and dependencies on other epics. Parsed from `plan.json` written
 //! by the Plan stage.
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Task {
     pub id: String,
     pub title: String,
@@ -12,7 +12,7 @@ pub struct Task {
     pub detail: String,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Epic {
     pub id: String,
     pub title: String,
@@ -28,7 +28,7 @@ pub struct Epic {
     pub tasks: Vec<Task>,
 }
 
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Plan {
     pub epics: Vec<Epic>,
 }
@@ -227,5 +227,13 @@ mod tests {
             blank.validate_repos(&names).is_err(),
             "empty repo is rejected"
         );
+    }
+
+    #[test]
+    fn plan_round_trips_through_json() {
+        let plan = parse_plan(plan_json()).unwrap();
+        let json = serde_json::to_string(&plan).expect("Plan must serialize");
+        let back: Plan = serde_json::from_str(&json).expect("Plan must deserialize");
+        assert_eq!(plan, back);
     }
 }
