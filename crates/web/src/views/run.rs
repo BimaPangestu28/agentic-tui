@@ -315,10 +315,33 @@ pub fn Run() -> impl IntoView {
         }
     };
 
+    let resuming = RwSignal::new(false);
+    let resume_error = RwSignal::new(None::<String>);
+    let on_resume = {
+        let run_id = run_id.clone();
+        move |_| {
+            if resuming.get_untracked() {
+                return;
+            }
+            resuming.set(true);
+            resume_error.set(None);
+            let run_id = run_id.clone();
+            spawn_local(async move {
+                if let Err(err) = api::resume_run(&run_id).await {
+                    resume_error.set(Some(err));
+                }
+                resuming.set(false);
+            });
+        }
+    };
+
     view! {
         <div class="run-view">
             {move || {
                 abort_error.get().map(|err| view! { <p class="error">{err}</p> })
+            }}
+            {move || {
+                resume_error.get().map(|err| view! { <p class="error">{err}</p> })
             }}
             {move || match app.get() {
                 None => {
@@ -337,6 +360,15 @@ pub fn Run() -> impl IntoView {
                         .map(|epic| (epic.id.clone(), epic.status))
                         .collect();
                     let is_finished = matches!(snapshot.phase, Phase::Done | Phase::Failed);
+                    // Resumable when the run failed with epics still unfinished:
+                    // the restart-recovery path and ordinary failures both land
+                    // here, and resume re-runs every non-merged epic.
+                    let can_resume = matches!(snapshot.phase, Phase::Failed)
+                        && snapshot
+                            .epics
+                            .iter()
+                            .any(|epic| !matches!(epic.status, EpicStatus::Merged));
+                    let restart_error = snapshot.error.clone();
                     // The run snapshot has no repo list of its own; derive the
                     // repo count from the distinct non-empty repos tagged on
                     // its epics rather than fabricate one.
@@ -370,6 +402,12 @@ pub fn Run() -> impl IntoView {
                         .collect();
 
                     view! {
+                        {restart_error
+                            .clone()
+                            .filter(|_| can_resume)
+                            .map(|reason| {
+                                view! { <div class="run-status-banner interrupted">{reason}</div> }
+                            })}
                         <div class="run-header">
                             <div>
                                 <div class="run-goal">{snapshot.goal.clone()}</div>
@@ -391,6 +429,23 @@ pub fn Run() -> impl IntoView {
                                             >
                                                 {move || {
                                                     if aborting.get() { "Aborting..." } else { "Abort run" }
+                                                }}
+                                            </button>
+                                        </div>
+                                    }
+                                })}
+                            {can_resume
+                                .then(|| {
+                                    view! {
+                                        <div class="run-actions">
+                                            <button
+                                                type="button"
+                                                class="btn-primary"
+                                                disabled=move || resuming.get()
+                                                on:click=on_resume.clone()
+                                            >
+                                                {move || {
+                                                    if resuming.get() { "Resuming..." } else { "Resume run" }
                                                 }}
                                             </button>
                                         </div>

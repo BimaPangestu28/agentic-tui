@@ -1139,6 +1139,11 @@ label { color: var(--text); font-size: var(--fs-sm); font-weight: 550; }
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
 }
+.run-status-banner.interrupted {
+  background: var(--st-block-soft);
+  border-color: var(--st-block-line);
+  color: var(--danger);
+}
 
 /* ============================================================================
    8. MOTION
