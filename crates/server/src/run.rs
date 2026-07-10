@@ -4,7 +4,7 @@
 //! each event so any number of WebSocket subscribers can follow the same run.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 
@@ -14,7 +14,7 @@ use tokio::task::JoinHandle;
 use shared::{App, EpicStatus, StageEvent};
 
 use crate::workspace::{Repo, Workspace};
-use crate::{config, orchestrator, run_pipeline, workspace, worktree};
+use crate::{config, orchestrator, run_pipeline, run_store, workspace, worktree};
 
 pub use shared::StartRunRequest;
 
@@ -83,6 +83,94 @@ struct RunHandle {
     repos: Arc<HashMap<String, orchestrator::RepoRun>>,
     goal: String,
     default_verify: String,
+}
+
+/// The static context a run needs to write a persisted snapshot: its identity,
+/// config, and the repos it targets, in display order. The changing `App` is
+/// passed separately to `persist`.
+#[derive(Clone)]
+struct PersistCtx {
+    id: String,
+    workspace: String,
+    goal: String,
+    default_verify: String,
+    plan_cwd: PathBuf,
+    repos: Vec<run_store::PersistedRepo>,
+}
+
+/// Build a `PersistCtx` from a run's resolved config. `repo_names` fixes the
+/// display order; `repos` supplies each repo's refs.
+fn build_persist_ctx(
+    id: &str,
+    workspace: &str,
+    goal: &str,
+    default_verify: &str,
+    plan_cwd: &Path,
+    repo_names: &[String],
+    repos: &HashMap<String, orchestrator::RepoRun>,
+) -> PersistCtx {
+    let persisted_repos = repo_names
+        .iter()
+        .filter_map(|name| {
+            repos.get(name).map(|rc| run_store::PersistedRepo {
+                name: name.clone(),
+                path: rc.path.clone(),
+                base_ref: rc.base_ref.clone(),
+                integration_branch: rc.integration_branch.clone(),
+            })
+        })
+        .collect();
+    PersistCtx {
+        id: id.to_string(),
+        workspace: workspace.to_string(),
+        goal: goal.to_string(),
+        default_verify: default_verify.to_string(),
+        plan_cwd: plan_cwd.to_path_buf(),
+        repos: persisted_repos,
+    }
+}
+
+/// True for events that change a run's persisted state (lifecycle, cost, and
+/// terminal). Streaming log events are skipped so persistence does not hammer
+/// the disk on every line.
+fn should_persist(ev: &StageEvent) -> bool {
+    !matches!(
+        ev,
+        StageEvent::StageLog { .. }
+            | StageEvent::StageAssistant { .. }
+            | StageEvent::StageTool { .. }
+    )
+}
+
+/// Write a snapshot of `app` for `ctx` into the default run store. A no-op
+/// while the run is still Planning, so a run interrupted before its plan
+/// exists leaves no file to resume.
+fn persist(ctx: &PersistCtx, app: &App) {
+    persist_to(&run_store::runs_dir(), ctx, app);
+}
+
+/// `persist` against an explicit directory, for tests.
+fn persist_to(dir: &Path, ctx: &PersistCtx, app: &App) {
+    if app.phase == shared::Phase::Planning {
+        return;
+    }
+    // The run's own plan lives at plan_cwd/.agentic-plan.json for the whole
+    // active run (the workspace-busy guard blocks a concurrent overwrite).
+    let plan_json =
+        std::fs::read_to_string(ctx.plan_cwd.join(".agentic-plan.json")).unwrap_or_default();
+    let run = run_store::PersistedRun {
+        id: ctx.id.clone(),
+        workspace: ctx.workspace.clone(),
+        goal: ctx.goal.clone(),
+        default_verify: ctx.default_verify.clone(),
+        plan_cwd: ctx.plan_cwd.clone(),
+        repos: ctx.repos.clone(),
+        plan_json,
+        app: app.clone(),
+    };
+    if let Err(e) = run_store::save(dir, &run) {
+        eprintln!("warning: could not persist run {}: {e}", ctx.id);
+    }
 }
 
 /// Every run started this session, keyed by id. `Mutex::const_new` cannot
@@ -200,6 +288,16 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let verify_for_retry = verify_cmd.clone();
     let plan_cwd_for_retry = plan_cwd.clone();
 
+    let persist_ctx = build_persist_ctx(
+        &id,
+        &workspace_name,
+        &goal_for_retry,
+        &verify_for_retry,
+        &plan_cwd_for_retry,
+        &repo_names,
+        &repos,
+    );
+
     let task = spawn_pipeline(
         app.clone(),
         tx.clone(),
@@ -209,6 +307,7 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
         req.goal,
         verify_cmd,
         req.refine_cost,
+        persist_ctx,
     );
 
     runs.insert(
@@ -246,6 +345,7 @@ fn spawn_pipeline(
     goal: String,
     default_verify: String,
     refine_cost: f64,
+    persist_ctx: PersistCtx,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let (pipeline_tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();
@@ -272,9 +372,13 @@ fn spawn_pipeline(
         let forward_fut = async {
             while let Some(stage) = rx.recv().await {
                 let done = matches!(stage, StageEvent::Done | StageEvent::Fatal { .. });
+                let persist_this = should_persist(&stage);
                 let mut guard = app.lock().await;
                 guard.apply_stage(stage);
                 let _ = tx.send(guard.clone());
+                if persist_this {
+                    persist(&persist_ctx, &guard);
+                }
                 if done {
                     completed.store(true, Ordering::SeqCst);
                 }
@@ -320,6 +424,15 @@ pub async fn retry(run_id: &str, epic_id: &str) -> Result<(), RetryError> {
     };
 
     handle.completed.store(false, Ordering::SeqCst);
+    let persist_ctx = build_persist_ctx(
+        &handle.id,
+        &handle.workspace,
+        &handle.goal,
+        &handle.default_verify,
+        &handle.plan_cwd,
+        &handle.repo_names,
+        &handle.repos,
+    );
     let task = spawn_retry(
         handle.app.clone(),
         handle.tx.clone(),
@@ -330,6 +443,7 @@ pub async fn retry(run_id: &str, epic_id: &str) -> Result<(), RetryError> {
         handle.default_verify.clone(),
         epic_id.to_string(),
         initial_cost,
+        persist_ctx,
     );
     handle.task = Some(task);
     Ok(())
@@ -350,6 +464,7 @@ fn spawn_retry(
     default_verify: String,
     epic_id: String,
     initial_cost: f64,
+    persist_ctx: PersistCtx,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let (pipeline_tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();
@@ -390,9 +505,13 @@ fn spawn_retry(
 
         let forward_fut = async {
             while let Some(stage) = rx.recv().await {
+                let persist_this = should_persist(&stage);
                 let mut app = app.lock().await;
                 app.apply_stage(stage);
                 let _ = tx.send(app.clone());
+                if persist_this {
+                    persist(&persist_ctx, &app);
+                }
             }
         };
 
@@ -419,17 +538,27 @@ pub async fn abort(id: &str) {
         match runs.get_mut(id) {
             Some(handle) if !handle.completed.load(Ordering::SeqCst) => {
                 handle.completed.store(true, Ordering::SeqCst);
+                let persist_ctx = build_persist_ctx(
+                    &handle.id,
+                    &handle.workspace,
+                    &handle.goal,
+                    &handle.default_verify,
+                    &handle.plan_cwd,
+                    &handle.repo_names,
+                    &handle.repos,
+                );
                 Some((
                     handle.task.take(),
                     handle.app.clone(),
                     handle.tx.clone(),
                     handle.repo_paths.clone(),
+                    persist_ctx,
                 ))
             }
             _ => None,
         }
     };
-    let Some((task, app, tx, repo_paths)) = target else {
+    let Some((task, app, tx, repo_paths, persist_ctx)) = target else {
         return;
     };
 
@@ -449,6 +578,7 @@ pub async fn abort(id: &str) {
             reason: "run aborted".to_string(),
         });
         let _ = tx.send(app.clone());
+        persist(&persist_ctx, &app);
     }
 
     // Phase 4: clean up epic worktrees in every repo the run targeted, now
@@ -520,4 +650,64 @@ pub async fn list() -> Vec<shared::RunSummary> {
     }
     out.sort_by(|a, b| a.id.cmp(&b.id));
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use shared::Phase;
+
+    #[test]
+    fn should_persist_ignores_streaming_events_only() {
+        assert!(!should_persist(&StageEvent::StageLog {
+            tag: "plan".into(),
+            line: "hi".into(),
+        }));
+        assert!(!should_persist(&StageEvent::StageAssistant {
+            tag: "plan".into(),
+            text: "hi".into(),
+        }));
+        assert!(!should_persist(&StageEvent::StageTool {
+            tag: "plan".into(),
+            name: "Read".into(),
+            input: String::new(),
+        }));
+        assert!(should_persist(&StageEvent::Cost { total: 1.0 }));
+        assert!(should_persist(&StageEvent::Done));
+        assert!(should_persist(&StageEvent::EpicMerged { id: "a".into() }));
+    }
+
+    #[test]
+    fn persist_writes_a_snapshot_once_past_planning() {
+        let dir = std::env::temp_dir().join(format!("persist-hook-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let plan_cwd = dir.join("cwd");
+        std::fs::create_dir_all(&plan_cwd).unwrap();
+        std::fs::write(plan_cwd.join(".agentic-plan.json"), r#"{"epics":[]}"#).unwrap();
+
+        let ctx = PersistCtx {
+            id: "7".to_string(),
+            workspace: "greentic".to_string(),
+            goal: "g".to_string(),
+            default_verify: "make verify".to_string(),
+            plan_cwd: plan_cwd.clone(),
+            repos: vec![],
+        };
+        let runs = dir.join("runs");
+
+        // Planning phase writes nothing.
+        let mut app = App::new("g".to_string(), "greentic".to_string());
+        persist_to(&runs, &ctx, &app);
+        assert!(run_store::load_all(&runs).is_empty());
+
+        // Implementing phase writes a snapshot carrying the plan JSON.
+        app.phase = Phase::Implementing;
+        persist_to(&runs, &ctx, &app);
+        let loaded = run_store::load_all(&runs);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "7");
+        assert_eq!(loaded[0].plan_json, r#"{"epics":[]}"#);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
