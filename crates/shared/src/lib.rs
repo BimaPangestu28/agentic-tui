@@ -141,7 +141,7 @@ pub enum StageEvent {
     Done,
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct App {
     pub goal: String,
     pub workspace: String,
