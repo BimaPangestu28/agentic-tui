@@ -9,7 +9,7 @@ use std::path::Path;
 
 use tokio::sync::mpsc;
 
-use shared::StageEvent;
+use shared::{Language, StageEvent};
 
 use crate::config;
 use crate::engine;
@@ -66,12 +66,12 @@ async fn run_refine_pass(
 /// (the pass errored, or `.agentic-refine.json` was unreadable or
 /// unparseable), falls back to the original goal with no questions. The cost
 /// is real either way, since it is billed once the session runs.
-pub async fn questions(root: &Path, goal: &str) -> (String, Vec<String>, f64) {
+pub async fn questions(root: &Path, goal: &str, language: Language) -> (String, Vec<String>, f64) {
     let (tx, _rx) = mpsc::unbounded_channel::<StageEvent>();
     let out_path = root.join(".agentic-refine.json");
     let (cost, result) = run_refine_pass(
         root,
-        &config::refine_questions_prompt(goal, &out_path.to_string_lossy()),
+        &config::refine_questions_prompt(goal, &out_path.to_string_lossy(), language),
         &out_path,
         &tx,
     )
@@ -89,12 +89,17 @@ pub async fn questions(root: &Path, goal: &str) -> (String, Vec<String>, f64) {
 /// Run refine pass 2 for the HTTP API: fold the user's answers into a final
 /// goal. On failure, falls back to the original goal; the cost is still
 /// reported.
-pub async fn finalize(root: &Path, goal: &str, answers: &[(String, String)]) -> (String, f64) {
+pub async fn finalize(
+    root: &Path,
+    goal: &str,
+    answers: &[(String, String)],
+    language: Language,
+) -> (String, f64) {
     let (tx, _rx) = mpsc::unbounded_channel::<StageEvent>();
     let out_path = root.join(".agentic-refine.json");
     let (cost, result) = run_refine_pass(
         root,
-        &config::refine_finalize_prompt(goal, answers, &out_path.to_string_lossy()),
+        &config::refine_finalize_prompt(goal, answers, &out_path.to_string_lossy(), language),
         &out_path,
         &tx,
     )

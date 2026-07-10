@@ -11,7 +11,7 @@ use std::sync::Arc;
 use tokio::sync::{broadcast, mpsc, Mutex};
 use tokio::task::JoinHandle;
 
-use shared::{App, EpicStatus, StageEvent};
+use shared::{App, EpicStatus, Language, StageEvent};
 
 use crate::workspace::{Repo, Workspace};
 use crate::{config, orchestrator, run_pipeline, run_store, workspace, worktree};
@@ -109,6 +109,7 @@ struct RunHandle {
     repos: Arc<HashMap<String, orchestrator::RepoRun>>,
     goal: String,
     default_verify: String,
+    language: Language,
 }
 
 /// The static context a run needs to write a persisted snapshot: its identity,
@@ -120,6 +121,7 @@ struct PersistCtx {
     workspace: String,
     goal: String,
     default_verify: String,
+    language: Language,
     plan_cwd: PathBuf,
     repos: Vec<run_store::PersistedRepo>,
     // The run's own plan, when known at ctx-build time. `Some` pins persistence
@@ -131,11 +133,13 @@ struct PersistCtx {
 
 /// Build a `PersistCtx` from a run's resolved config. `repo_names` fixes the
 /// display order; `repos` supplies each repo's refs.
+#[allow(clippy::too_many_arguments)]
 fn build_persist_ctx(
     id: &str,
     workspace: &str,
     goal: &str,
     default_verify: &str,
+    language: Language,
     plan_cwd: &Path,
     repo_names: &[String],
     repos: &HashMap<String, orchestrator::RepoRun>,
@@ -156,6 +160,7 @@ fn build_persist_ctx(
         workspace: workspace.to_string(),
         goal: goal.to_string(),
         default_verify: default_verify.to_string(),
+        language,
         plan_cwd: plan_cwd.to_path_buf(),
         repos: persisted_repos,
         // `None` means "read the shared `.agentic-plan.json` at persist time" —
@@ -206,6 +211,7 @@ fn persist_to(dir: &Path, ctx: &PersistCtx, app: &App) {
         workspace: ctx.workspace.clone(),
         goal: ctx.goal.clone(),
         default_verify: ctx.default_verify.clone(),
+        language: ctx.language,
         plan_cwd: ctx.plan_cwd.clone(),
         repos: ctx.repos.clone(),
         plan_json,
@@ -303,6 +309,7 @@ pub async fn rehydrate() {
             repos: Arc::new(repos),
             goal: persisted_run.goal,
             default_verify: persisted_run.default_verify,
+            language: persisted_run.language,
         };
         runs.insert(persisted_run.id, handle);
     }
@@ -423,12 +430,14 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
     let goal_for_retry = req.goal.clone();
     let verify_for_retry = verify_cmd.clone();
     let plan_cwd_for_retry = plan_cwd.clone();
+    let language = req.language;
 
     let persist_ctx = build_persist_ctx(
         &id,
         &workspace_name,
         &goal_for_retry,
         &verify_for_retry,
+        language,
         &plan_cwd_for_retry,
         &repo_names,
         &repos,
@@ -442,6 +451,7 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
         (*repos).clone(),
         req.goal,
         verify_cmd,
+        language,
         req.refine_cost,
         persist_ctx,
     );
@@ -461,6 +471,7 @@ pub async fn start(req: StartRunRequest) -> Result<String, StartError> {
             repos,
             goal: goal_for_retry,
             default_verify: verify_for_retry,
+            language,
         },
     );
 
@@ -480,6 +491,7 @@ fn spawn_pipeline(
     repos: HashMap<String, orchestrator::RepoRun>,
     goal: String,
     default_verify: String,
+    language: Language,
     refine_cost: f64,
     persist_ctx: PersistCtx,
 ) -> JoinHandle<()> {
@@ -492,6 +504,7 @@ fn spawn_pipeline(
                 repos,
                 &goal,
                 &default_verify,
+                language,
                 refine_cost,
                 &pipeline_tx,
             )
@@ -565,6 +578,7 @@ pub async fn retry(run_id: &str, epic_id: &str) -> Result<(), RetryError> {
         &handle.workspace,
         &handle.goal,
         &handle.default_verify,
+        handle.language,
         &handle.plan_cwd,
         &handle.repo_names,
         &handle.repos,
@@ -577,6 +591,7 @@ pub async fn retry(run_id: &str, epic_id: &str) -> Result<(), RetryError> {
         handle.repos.clone(),
         handle.goal.clone(),
         handle.default_verify.clone(),
+        handle.language,
         epic_id.to_string(),
         initial_cost,
         persist_ctx,
@@ -598,6 +613,7 @@ fn spawn_retry(
     repos: Arc<HashMap<String, orchestrator::RepoRun>>,
     goal: String,
     default_verify: String,
+    language: Language,
     epic_id: String,
     initial_cost: f64,
     persist_ctx: PersistCtx,
@@ -618,6 +634,7 @@ fn spawn_retry(
                         &repos,
                         &goal,
                         &default_verify,
+                        language,
                         initial_cost,
                         pipeline_tx.clone(),
                     )
@@ -697,6 +714,7 @@ pub async fn resume(run_id: &str) -> Result<(), ResumeError> {
         &handle.workspace,
         &handle.goal,
         &handle.default_verify,
+        handle.language,
         &handle.plan_cwd,
         &handle.repo_names,
         &handle.repos,
@@ -712,6 +730,7 @@ pub async fn resume(run_id: &str) -> Result<(), ResumeError> {
         handle.repos.clone(),
         handle.goal.clone(),
         handle.default_verify.clone(),
+        handle.language,
         plan,
         seed_merged,
         initial_cost,
@@ -735,6 +754,7 @@ fn spawn_resume(
     repos: Arc<HashMap<String, orchestrator::RepoRun>>,
     goal: String,
     default_verify: String,
+    language: Language,
     plan: crate::plan::Plan,
     seed_merged: Vec<String>,
     initial_cost: f64,
@@ -760,6 +780,7 @@ fn spawn_resume(
             goal,
             default_verify,
             initial_cost,
+            language,
         };
 
         let pipeline_fut = async move {
@@ -812,6 +833,7 @@ pub async fn abort(id: &str) {
                     &handle.workspace,
                     &handle.goal,
                     &handle.default_verify,
+                    handle.language,
                     &handle.plan_cwd,
                     &handle.repo_names,
                     &handle.repos,
@@ -959,6 +981,7 @@ mod tests {
             workspace: "greentic".to_string(),
             goal: "g".to_string(),
             default_verify: "make verify".to_string(),
+            language: Language::English,
             plan_cwd: plan_cwd.clone(),
             repos: vec![],
             plan_json: None,
@@ -1003,6 +1026,7 @@ mod tests {
             workspace: "greentic".to_string(),
             goal: "g".to_string(),
             default_verify: "make verify".to_string(),
+            language: Language::English,
             plan_cwd: plan_cwd.clone(),
             repos: vec![],
             plan_json: Some(plan_1.to_string()),
@@ -1098,6 +1122,7 @@ mod tests {
                 workspace: "ws".to_string(),
                 goal: "g".to_string(),
                 default_verify: "make verify".to_string(),
+                language: Language::English,
                 plan_cwd: std::path::PathBuf::from("/tmp"),
                 repos: vec![],
                 plan_json: r#"{"epics":[]}"#.to_string(),

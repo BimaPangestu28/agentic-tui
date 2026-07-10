@@ -7,9 +7,55 @@ use leptos::prelude::*;
 use leptos::task::spawn_local;
 use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::NavigateOptions;
-use shared::{RepoDto, StartRunRequest, WorkspaceDto};
+use shared::{Language, RepoDto, StartRunRequest, WorkspaceDto};
 
 use crate::api;
+
+/// The fallback integration branch name offered when a repo's workspace config
+/// does not pin one. Matches the server's default in `run::start`.
+const DEFAULT_INTEGRATION: &str = "agentic-integration";
+
+/// Where a repo's branch list is in its fetch lifecycle. `Loaded` drives the
+/// real dropdowns; `Failed` falls the form back to free-text inputs so a repo
+/// whose branches could not be listed never blocks starting a run.
+#[derive(Clone, Debug, PartialEq)]
+enum BranchStatus {
+    Loading,
+    Loaded,
+    Failed,
+}
+
+/// Per-repo branch selection for the form: the chosen base ref and integration
+/// branch, plus the repo's real branches once fetched. Held as plain data in a
+/// single `Vec` signal (updated by index), not a signal per field.
+#[derive(Clone, Debug, PartialEq)]
+struct RepoBranchState {
+    name: String,
+    path: String,
+    base: String,
+    integration: String,
+    branches: Vec<String>,
+    status: BranchStatus,
+}
+
+/// Build the `WorkspaceDto` to submit, folding each repo's chosen base and
+/// integration branch (blank means "unset", so the server applies its default)
+/// back into the repos. Returns `None` if the workspace has not loaded yet.
+fn workspace_from_states(name: &str, states: &[RepoBranchState]) -> WorkspaceDto {
+    let repos = states
+        .iter()
+        .map(|state| RepoDto {
+            name: state.name.clone(),
+            path: state.path.clone(),
+            base: normalize(state.base.clone()),
+            integration: normalize(state.integration.clone()),
+        })
+        .collect();
+    WorkspaceDto {
+        name: name.to_string(),
+        repos,
+    }
+}
 
 /// Local state for the refine sub-flow, driven entirely by user actions and
 /// server responses. `Editing` is the initial form. `Answering` holds the
@@ -76,6 +122,175 @@ fn common_root(repos: &[RepoDto]) -> String {
     }
 }
 
+/// Fetch each repo's branches in parallel and update its state in place. On
+/// success, populate `branches` and default an unset base to the repo's current
+/// branch (or its first branch). On failure, mark the repo `Failed` so the form
+/// falls back to free-text inputs, defaulting an unset base to `HEAD`.
+fn load_branches(repo_states: RwSignal<Vec<RepoBranchState>>) {
+    let paths: Vec<(usize, String)> = repo_states
+        .get_untracked()
+        .iter()
+        .enumerate()
+        .map(|(i, state)| (i, state.path.clone()))
+        .collect();
+    for (index, path) in paths {
+        spawn_local(async move {
+            match api::list_branches(&path).await {
+                Ok(response) => repo_states.update(|states| {
+                    if let Some(state) = states.get_mut(index) {
+                        state.status = BranchStatus::Loaded;
+                        if state.base.trim().is_empty() {
+                            state.base = response
+                                .current
+                                .clone()
+                                .or_else(|| response.branches.first().cloned())
+                                .unwrap_or_default();
+                        }
+                        state.branches = response.branches;
+                    }
+                }),
+                Err(_) => repo_states.update(|states| {
+                    if let Some(state) = states.get_mut(index) {
+                        state.status = BranchStatus::Failed;
+                        if state.base.trim().is_empty() {
+                            state.base = "HEAD".to_string();
+                        }
+                    }
+                }),
+            }
+        });
+    }
+}
+
+/// One repo's branch controls: a base-branch dropdown (of the repo's real
+/// branches, or a free-text input while loading or after a failed fetch) and an
+/// editable integration-branch combobox (a `datalist` of existing branches the
+/// user can pick from or type past). Edits write back into `repo_states[index]`.
+fn repo_branch_row(
+    repo_states: RwSignal<Vec<RepoBranchState>>,
+    index: usize,
+    state: RepoBranchState,
+) -> impl IntoView {
+    let control_class = "w-full rounded-md border border-line bg-inset px-[12px] py-2 \
+        min-h-[36px] font-mono text-[13px] text-ink transition-colors \
+        hover:border-line-strong focus:outline-none focus:border-accent/40 \
+        focus:bg-surface focus:ring-[3px] focus:ring-accent/12";
+    let sub_label = "text-[12px] font-semibold text-muted";
+    let datalist_id = format!("branches-{index}");
+
+    // Base: a real dropdown once branches are known; a free-text input while
+    // loading or after a failed fetch (so the form is never blocked).
+    let base_control = if matches!(state.status, BranchStatus::Loaded) && !state.branches.is_empty()
+    {
+        let selected_base = state.base.clone();
+        let options = state
+            .branches
+            .iter()
+            .cloned()
+            .map(|branch| {
+                let is_selected = branch == selected_base;
+                let label = branch.clone();
+                view! { <option value=branch selected=is_selected>{label}</option> }
+            })
+            .collect::<Vec<_>>();
+        view! {
+            <select
+                class=control_class
+                prop:value=state.base.clone()
+                on:change=move |ev| {
+                    let value = event_target_value(&ev);
+                    repo_states
+                        .update(|states| {
+                            if let Some(s) = states.get_mut(index) {
+                                s.base = value;
+                            }
+                        });
+                }
+            >
+                {options}
+            </select>
+        }
+        .into_any()
+    } else {
+        view! {
+            <input
+                type="text"
+                class=control_class
+                prop:value=state.base.clone()
+                on:input=move |ev| {
+                    let value = event_target_value(&ev);
+                    repo_states
+                        .update(|states| {
+                            if let Some(s) = states.get_mut(index) {
+                                s.base = value;
+                            }
+                        });
+                }
+            />
+        }
+        .into_any()
+    };
+
+    // Integration: an editable combobox via a native datalist, so the user can
+    // pick an existing branch or type a new name.
+    let integration_options = state
+        .branches
+        .iter()
+        .cloned()
+        .map(|branch| view! { <option value=branch></option> })
+        .collect::<Vec<_>>();
+
+    let status_hint = match state.status {
+        BranchStatus::Loading => Some(
+            view! { <span class="text-[12px] text-dim">"Loading branches..."</span> }.into_any(),
+        ),
+        BranchStatus::Failed => Some(
+            view! {
+                <span class="text-[12px] text-danger">
+                    "Could not list branches; enter refs by hand."
+                </span>
+            }
+            .into_any(),
+        ),
+        BranchStatus::Loaded => None,
+    };
+
+    view! {
+        <div class="flex flex-col gap-2 rounded-md border border-line bg-surface p-3">
+            <div class="flex flex-col gap-px min-w-0">
+                <span class="text-[14px] font-semibold text-ink">{state.name.clone()}</span>
+                <span class="truncate font-mono text-[12px] text-dim">{state.path.clone()}</span>
+            </div>
+            {status_hint}
+            <div class="grid grid-cols-1 min-[560px]:grid-cols-2 gap-3">
+                <div class="flex flex-col gap-1">
+                    <label class=sub_label>"Base branch"</label>
+                    {base_control}
+                </div>
+                <div class="flex flex-col gap-1">
+                    <label class=sub_label>"Integration branch"</label>
+                    <input
+                        type="text"
+                        class=control_class
+                        list=datalist_id.clone()
+                        prop:value=state.integration.clone()
+                        on:input=move |ev| {
+                            let value = event_target_value(&ev);
+                            repo_states
+                                .update(|states| {
+                                    if let Some(s) = states.get_mut(index) {
+                                        s.integration = value;
+                                    }
+                                });
+                        }
+                    />
+                    <datalist id=datalist_id>{integration_options}</datalist>
+                </div>
+            </div>
+        </div>
+    }
+}
+
 /// Trims a text input and turns a blank value into `None`, matching the
 /// "empty means unset" convention `StartRunRequest`'s optional fields use.
 fn normalize(value: String) -> Option<String> {
@@ -118,6 +333,10 @@ pub fn NewRun() -> impl IntoView {
     let goal_input = RwSignal::new(String::new());
     let verify_input = RwSignal::new(String::new());
     let refine_enabled = RwSignal::new(true);
+    let language = RwSignal::new(Language::English);
+    // Per-repo base/integration branch selection, filled once the workspace
+    // loads and each repo's branches are fetched.
+    let repo_states = RwSignal::new(Vec::<RepoBranchState>::new());
 
     let flow = RwSignal::new(FlowState::Editing);
 
@@ -160,7 +379,31 @@ pub fn NewRun() -> impl IntoView {
         spawn_local(async move {
             match api::list_workspaces().await {
                 Ok(list) => match list.into_iter().find(|w| w.name == name) {
-                    Some(found) => workspace.set(Some(found)),
+                    Some(found) => {
+                        // Seed the per-repo branch state from the workspace
+                        // config (base/integration may be preset there), then
+                        // fetch each repo's real branches to populate the
+                        // dropdowns.
+                        repo_states.set(
+                            found
+                                .repos
+                                .iter()
+                                .map(|repo| RepoBranchState {
+                                    name: repo.name.clone(),
+                                    path: repo.path.clone(),
+                                    base: repo.base.clone().unwrap_or_default(),
+                                    integration: repo
+                                        .integration
+                                        .clone()
+                                        .unwrap_or_else(|| DEFAULT_INTEGRATION.to_string()),
+                                    branches: Vec::new(),
+                                    status: BranchStatus::Loading,
+                                })
+                                .collect(),
+                        );
+                        workspace.set(Some(found));
+                        load_branches(repo_states);
+                    }
                     None => {
                         load_error.set(Some(format!("workspace '{name}' was not found")));
                     }
@@ -191,8 +434,9 @@ pub fn NewRun() -> impl IntoView {
         if refine_enabled.get_untracked() {
             flow.set(FlowState::Submitting);
             let root = common_root(&selected.repos);
+            let lang = language.get_untracked();
             spawn_local(async move {
-                match api::refine_questions(&root, &goal).await {
+                match api::refine_questions(&root, &goal, lang).await {
                     Ok(response) if response.questions.is_empty() => {
                         flow.set(FlowState::Confirming {
                             goal: response.refined_goal,
@@ -216,10 +460,11 @@ pub fn NewRun() -> impl IntoView {
             flow.set(FlowState::Submitting);
             let navigate = navigate_for_start.clone();
             let request = StartRunRequest {
-                workspace: selected,
+                workspace: workspace_from_states(&selected.name, &repo_states.get_untracked()),
                 goal,
                 verify,
                 refine_cost: 0.0,
+                language: language.get_untracked(),
             };
             spawn_local(async move {
                 launch_run(navigate, flow, request).await;
@@ -248,9 +493,10 @@ pub fn NewRun() -> impl IntoView {
         let original_goal = goal_input.get_untracked().trim().to_string();
         let qa_pairs: Vec<(String, String)> = questions.into_iter().zip(answers).collect();
         let root = common_root(&selected.repos);
+        let lang = language.get_untracked();
         flow.set(FlowState::Submitting);
         spawn_local(async move {
-            match api::refine_finalize(&root, &original_goal, qa_pairs).await {
+            match api::refine_finalize(&root, &original_goal, qa_pairs, lang).await {
                 Ok(response) => flow.set(FlowState::Confirming {
                     goal: response.refined_goal,
                     cost: cost + response.cost,
@@ -278,10 +524,11 @@ pub fn NewRun() -> impl IntoView {
         flow.set(FlowState::Submitting);
         let navigate = navigate_for_plan.clone();
         let request = StartRunRequest {
-            workspace: selected,
+            workspace: workspace_from_states(&selected.name, &repo_states.get_untracked()),
             goal,
             verify,
             refine_cost: cost,
+            language: language.get_untracked(),
         };
         spawn_local(async move {
             launch_run(navigate, flow, request).await;
@@ -293,25 +540,6 @@ pub fn NewRun() -> impl IntoView {
     // enclosing view re-renders on every flow change), so the click handler
     // is cloned rather than moved out on each call.
     let render_form = move |error: Option<String>| {
-        // The workspace is loaded before the form renders (the Editing and Error
-        // states are only reached after the load completes), so read it
-        // untracked: the repo list is fixed for the lifetime of this view.
-        let repo_rows: Vec<_> = workspace
-            .get_untracked()
-            .map(|ws| {
-                ws.repos
-                    .into_iter()
-                    .map(|repo| {
-                        view! {
-                            <div class="flex flex-col gap-px min-w-0 px-3 py-2">
-                                <span class="text-[15px] font-semibold text-ink">{repo.name}</span>
-                                <span class="truncate font-mono text-[13px] text-dim">{repo.path}</span>
-                            </div>
-                        }
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
         view! {
             <div class="flex flex-col gap-6">
                 {error.map(|msg| view! { <p class=error_class>{msg}</p> })}
@@ -335,8 +563,18 @@ pub fn NewRun() -> impl IntoView {
 
                 <div class=field_class>
                     <label class=field_label>"Repos in scope"</label>
-                    <div class="flex flex-col gap-px rounded-md border border-line p-2 max-h-[220px] overflow-y-auto">
-                        {repo_rows}
+                    <p class=hint_class>
+                        "For each repo, pick the branch to build from and the branch the epics merge into."
+                    </p>
+                    <div class="flex flex-col gap-3 rounded-md border border-line p-3 max-h-[360px] overflow-y-auto">
+                        {move || {
+                            repo_states
+                                .get()
+                                .into_iter()
+                                .enumerate()
+                                .map(|(index, state)| repo_branch_row(repo_states, index, state))
+                                .collect::<Vec<_>>()
+                        }}
                     </div>
                 </div>
 
@@ -357,6 +595,38 @@ pub fn NewRun() -> impl IntoView {
                         />
                         <p class=hint_class>
                             "The planner may choose a verify command per repo; this is the fallback."
+                        </p>
+                    </div>
+                    <div class="flex flex-col gap-2 col-span-full">
+                        <label class=field_label>"Language"</label>
+                        <select
+                            class="w-full rounded-md border border-line bg-inset px-[14px] py-2.5 \
+                                min-h-[38px] text-[14px] text-ink transition-colors \
+                                hover:border-line-strong focus:outline-none focus:border-accent/40 \
+                                focus:bg-surface focus:ring-[3px] focus:ring-accent/12"
+                            prop:value=move || {
+                                match language.get() {
+                                    Language::English => "english",
+                                    Language::Indonesian => "indonesian",
+                                }
+                            }
+                            on:change=move |ev| {
+                                let value = event_target_value(&ev);
+                                language
+                                    .set(
+                                        if value == "indonesian" {
+                                            Language::Indonesian
+                                        } else {
+                                            Language::English
+                                        },
+                                    );
+                            }
+                        >
+                            <option value="english">"English"</option>
+                            <option value="indonesian">"Indonesia"</option>
+                        </select>
+                        <p class=hint_class>
+                            "Language for clarifying questions, summaries, and prose. Code, comments, and commit messages stay English."
                         </p>
                     </div>
                 </div>

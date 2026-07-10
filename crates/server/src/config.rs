@@ -1,10 +1,28 @@
 //! Knobs for the multi-stage orchestrator: permission mode, prose style, model
 //! and tool selection per stage, and the Plan and Epic prompts.
 
+use shared::Language;
+
 pub const PERMISSION_MODE: &str = "acceptEdits";
 
 const STYLE: &str = "Write directly and concisely. Do not use em dashes. Do \
 not use contractions in English prose. Avoid AI-sounding filler.";
+
+/// A sentence, appended to every prompt, telling the agent which language to
+/// use for prose addressed to the user. Empty for English (the model's default,
+/// so no behavior changes), non-empty otherwise. Code, identifiers, comments,
+/// and commit messages stay English regardless of the language chosen.
+pub fn language_directive(language: Language) -> String {
+    match language {
+        Language::English => String::new(),
+        other => format!(
+            " Communicate with the user in {lang}: write clarifying questions, \
+plan and epic titles, summaries, and any prose addressed to the user in {lang}. \
+Keep code, identifiers, comments, and commit messages in English.",
+            lang = other.label()
+        ),
+    }
+}
 
 // Models. Plan quality drives epic accuracy, so plan defaults to opus.
 pub const MODEL_PLAN: &str = "opus";
@@ -34,14 +52,19 @@ pub const DEFAULT_VERIFY_CMD: &str = "make verify";
 /// machine-readable plan.json (epics with tasks, dependencies, acceptance).
 /// `repos` lists each target repo as `(name, absolute path)`; every epic must
 /// name exactly one of them.
-pub fn plan_prompt(goal: &str, out_path: &str, repos: &[(String, String)]) -> String {
+pub fn plan_prompt(
+    goal: &str,
+    out_path: &str,
+    repos: &[(String, String)],
+    language: Language,
+) -> String {
     let repos_block: String = repos
         .iter()
         .map(|(name, path)| format!("- {name}: {path}\n"))
         .collect();
     format!(
         "You are a Tech Lead decomposing a goal into an implementation plan across \
-the repositories below. {style}\n\n\
+the repositories below. {style}{lang}\n\n\
 GOAL:\n{goal}\n\n\
 REPOS:\n{repos}\n\
 Step 1. Understand each repository with Glob and Grep. Detect language, \
@@ -64,6 +87,7 @@ entry must be an id that exists. Do not create cycles. Do not write any other \
 file.\n\
 Step 4. After writing, print the number of epics and a one line summary.",
         style = STYLE,
+        lang = language_directive(language),
         goal = goal,
         repos = repos_block,
         out = out_path,
@@ -72,10 +96,10 @@ Step 4. After writing, print the number of epics and a one line summary.",
 
 /// Prompt for the first refine pass. Claude reads the repo, rewrites the goal to
 /// be specific, and lists clarifying questions, writing them to a JSON file.
-pub fn refine_questions_prompt(goal: &str, out_path: &str) -> String {
+pub fn refine_questions_prompt(goal: &str, out_path: &str, language: Language) -> String {
     format!(
         "You are a Tech Lead sharpening a goal before planning work on a \
-repository. {style}\n\n\
+repository. {style}{lang}\n\n\
 GOAL:\n{goal}\n\n\
 Step 1. Understand this repository with Glob and Grep so your rewrite and \
 questions fit the real code.\n\
@@ -87,6 +111,7 @@ Step 4. Write ONLY a JSON file to {out} with this exact shape and nothing else:\
 {{\"refined_goal\":\"...\",\"questions\":[\"...\"]}}\n\
 Do not write any other file.",
         style = STYLE,
+        lang = language_directive(language),
         goal = goal,
         max = REFINE_MAX_QUESTIONS,
         out = out_path,
@@ -95,7 +120,12 @@ Do not write any other file.",
 
 /// Prompt for the second refine pass. Given the original goal and the user's
 /// answers, produce one final goal, writing it to the same JSON file.
-pub fn refine_finalize_prompt(goal: &str, answers: &[(String, String)], out_path: &str) -> String {
+pub fn refine_finalize_prompt(
+    goal: &str,
+    answers: &[(String, String)],
+    out_path: &str,
+    language: Language,
+) -> String {
     let qa: String = answers
         .iter()
         .map(|(question, answer)| {
@@ -108,7 +138,7 @@ pub fn refine_finalize_prompt(goal: &str, answers: &[(String, String)], out_path
         })
         .collect();
     format!(
-        "You are a Tech Lead finalizing a goal before planning. {style}\n\n\
+        "You are a Tech Lead finalizing a goal before planning. {style}{lang}\n\n\
 ORIGINAL GOAL:\n{goal}\n\n\
 CLARIFICATIONS:\n{qa}\n\
 Produce one specific, actionable goal statement that folds in the answers \
@@ -117,6 +147,7 @@ else:\n\
 {{\"refined_goal\":\"...\",\"questions\":[]}}\n\
 Do not write any other file.",
         style = STYLE,
+        lang = language_directive(language),
         goal = goal,
         qa = qa,
         out = out_path,
@@ -125,7 +156,12 @@ Do not write any other file.",
 
 /// Prompt for one epic session. Runs inside that epic's worktree and implements
 /// the epic's tasks, then runs the verification command itself as a check.
-pub fn epic_prompt(goal: &str, epic: &crate::plan::Epic, verify_cmd: &str) -> String {
+pub fn epic_prompt(
+    goal: &str,
+    epic: &crate::plan::Epic,
+    verify_cmd: &str,
+    language: Language,
+) -> String {
     let tasks: String = epic
         .tasks
         .iter()
@@ -138,7 +174,7 @@ pub fn epic_prompt(goal: &str, epic: &crate::plan::Epic, verify_cmd: &str) -> St
         .collect();
     format!(
         "You are implementing one epic of a larger goal, working in an isolated \
-git worktree. {style}\n\n\
+git worktree. {style}{lang}\n\n\
 OVERALL GOAL:\n{goal}\n\n\
 THIS EPIC: {title}\n\n\
 TASKS:\n{tasks}\n\
@@ -148,10 +184,49 @@ repository. When done, run `{verify}` with Bash and fix anything it reports \
 until it passes. Do not stop to ask questions, this run is non-interactive. \
 Commit your work with git when the epic is complete.",
         style = STYLE,
+        lang = language_directive(language),
         goal = goal,
         title = epic.title,
         tasks = tasks,
         acceptance = acceptance,
         verify = verify_cmd,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::Epic;
+
+    #[test]
+    fn english_directive_is_empty_so_behavior_is_unchanged() {
+        assert_eq!(language_directive(Language::English), "");
+    }
+
+    #[test]
+    fn a_non_english_directive_names_the_language_and_spares_code() {
+        let directive = language_directive(Language::Indonesian);
+        assert!(directive.contains("Indonesian"));
+        assert!(
+            directive.contains("commit messages in English"),
+            "code and commits must stay English regardless of the prose language"
+        );
+    }
+
+    #[test]
+    fn prompts_only_carry_the_language_directive_when_non_english() {
+        let epic = Epic {
+            id: "epic-1".to_string(),
+            title: "Add /healthz".to_string(),
+            repo: "greentic".to_string(),
+            verify: None,
+            depends_on: vec![],
+            acceptance: vec![],
+            tasks: vec![],
+        };
+        let english = epic_prompt("goal", &epic, "make verify", Language::English);
+        let indonesian = epic_prompt("goal", &epic, "make verify", Language::Indonesian);
+        assert!(!english.contains("Communicate with the user"));
+        assert!(indonesian.contains("Communicate with the user in Indonesian"));
+    }
 }

@@ -5,23 +5,25 @@
 
 use axum::{
     extract::ws::{Message, WebSocket, WebSocketUpgrade},
-    extract::Path,
+    extract::{Path, Query},
     http::{header, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use rust_embed::RustEmbed;
+use serde::Deserialize;
 use shared::{
     RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
-    RepoDto, RunSummary, SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse,
-    WorkspaceDto,
+    RepoBranchesResponse, RepoDto, RunSummary, SaveRequest, ScanRequest, ScanResponse,
+    StartRunRequest, StartRunResponse, WorkspaceDto,
 };
 use tokio::sync::broadcast;
 
 use crate::refine;
 use crate::run::{self, ResumeError, RetryError, StartError};
 use crate::workspace::{self, Repo, Workspace};
+use crate::worktree;
 
 #[derive(RustEmbed)]
 #[folder = "../web/dist"]
@@ -82,6 +84,23 @@ async fn scan_workspaces(Json(request): Json<ScanRequest>) -> Json<ScanResponse>
     Json(ScanResponse {
         repos: repos.iter().map(RepoDto::from).collect(),
     })
+}
+
+/// Query for `GET /api/repo/branches`: the repo path to list branches for.
+#[derive(Debug, Deserialize)]
+struct BranchesQuery {
+    path: String,
+}
+
+/// `GET /api/repo/branches?path=<repo>`: the repo's local branch names and the
+/// branch currently checked out, so the new-run form can offer real branches
+/// for the base and integration pickers. 400 when the path is not a git repo.
+async fn repo_branches(Query(query): Query<BranchesQuery>) -> Response {
+    let repo = workspace::expand_tilde(&query.path);
+    match worktree::list_branches(&repo).await {
+        Ok((branches, current)) => Json(RepoBranchesResponse { branches, current }).into_response(),
+        Err(e) => (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
+    }
 }
 
 /// `POST /api/workspaces`: persist the given list, merging with any entries
@@ -191,7 +210,8 @@ async fn refine_questions(
     Json(request): Json<RefineQuestionsRequest>,
 ) -> Json<RefineQuestionsResponse> {
     let root = workspace::expand_tilde(&request.root);
-    let (refined_goal, questions, cost) = refine::questions(&root, &request.goal).await;
+    let (refined_goal, questions, cost) =
+        refine::questions(&root, &request.goal, request.language).await;
     Json(RefineQuestionsResponse {
         refined_goal,
         questions,
@@ -206,7 +226,8 @@ async fn refine_finalize(
     Json(request): Json<RefineFinalizeRequest>,
 ) -> Json<RefineFinalizeResponse> {
     let root = workspace::expand_tilde(&request.root);
-    let (refined_goal, cost) = refine::finalize(&root, &request.goal, &request.answers).await;
+    let (refined_goal, cost) =
+        refine::finalize(&root, &request.goal, &request.answers, request.language).await;
     Json(RefineFinalizeResponse { refined_goal, cost })
 }
 
@@ -233,6 +254,7 @@ pub fn router() -> Router {
             get(list_workspaces).post(save_workspaces_handler),
         )
         .route("/api/workspaces/scan", post(scan_workspaces))
+        .route("/api/repo/branches", get(repo_branches))
         .route("/api/runs", get(list_runs).post(start_run))
         .route("/api/runs/{id}/abort", post(abort_run))
         .route("/api/runs/{id}/epics/{epic_id}/retry", post(retry_epic))
@@ -412,6 +434,7 @@ mod tests {
         let response = refine_questions(Json(RefineQuestionsRequest {
             root: repo.to_string_lossy().to_string(),
             goal: "add a health check".to_string(),
+            language: shared::Language::English,
         }))
         .await;
 
@@ -452,6 +475,7 @@ mod tests {
             root: repo.to_string_lossy().to_string(),
             goal: "add a health check".to_string(),
             answers: vec![("Which port?".to_string(), "8080".to_string())],
+            language: shared::Language::English,
         }))
         .await;
 
@@ -485,6 +509,7 @@ mod tests {
         let response = refine_questions(Json(RefineQuestionsRequest {
             root: repo.to_string_lossy().to_string(),
             goal: "add a health check".to_string(),
+            language: shared::Language::English,
         }))
         .await;
 

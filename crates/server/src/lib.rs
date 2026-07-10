@@ -31,11 +31,13 @@ pub fn resolve_setting(flag: Option<&str>, configured: Option<&str>, default: &s
 /// Plan the goal, then run the orchestrator. `repos` maps each repo name to
 /// where it lives and how its epics branch and merge; `default_verify` is the
 /// verify command an epic uses when it does not specify its own.
+#[allow(clippy::too_many_arguments)]
 pub async fn run_pipeline(
     plan_cwd: &std::path::Path,
     repos: std::collections::HashMap<String, orchestrator::RepoRun>,
     goal: &str,
     default_verify: &str,
+    language: shared::Language,
     refine_cost: f64,
     tx: &mpsc::UnboundedSender<StageEvent>,
 ) -> anyhow::Result<()> {
@@ -54,7 +56,7 @@ pub async fn run_pipeline(
         v.sort();
         v
     };
-    let prompt = config::plan_prompt(goal, &plan_path_str, &repo_list);
+    let prompt = config::plan_prompt(goal, &plan_path_str, &repo_list, language);
     let spec = engine::StageSpec {
         tag: "plan",
         cwd: plan_cwd,
@@ -95,6 +97,7 @@ pub async fn run_pipeline(
         goal: goal.to_string(),
         default_verify: default_verify.to_string(),
         initial_cost: refine_cost + outcome.cost,
+        language,
     };
     orchestrator::run(&parsed, run_config, tx.clone()).await?;
     Ok(())

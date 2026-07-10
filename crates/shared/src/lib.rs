@@ -292,6 +292,38 @@ impl App {
     }
 }
 
+/// The language the agent uses for prose addressed to the user: clarifying
+/// questions, plan and epic titles, summaries, and log narration. Code,
+/// identifiers, comments, and commit messages stay in English regardless. A
+/// missing value on the wire (older clients, older persisted runs) defaults to
+/// English via `#[serde(default)]` at each use site.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Language {
+    #[default]
+    English,
+    Indonesian,
+}
+
+impl Language {
+    /// The human name used inside prompts ("English", "Indonesian").
+    pub fn label(self) -> &'static str {
+        match self {
+            Language::English => "English",
+            Language::Indonesian => "Indonesian",
+        }
+    }
+}
+
+/// Response of `GET /api/repo/branches`: the repo's local branch names and the
+/// branch currently checked out in its main working tree (`None` if HEAD is
+/// detached). Powers the new-run form's per-repo base and integration pickers.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RepoBranchesResponse {
+    pub branches: Vec<String>,
+    pub current: Option<String>,
+}
+
 /// Wire form of a single repository inside a workspace group, used at the
 /// HTTP API boundary so the web UI does not need to depend on the server's
 /// native `Repo` type.
@@ -337,6 +369,10 @@ pub struct StartRunRequest {
     pub goal: String,
     pub verify: Option<String>,
     pub refine_cost: f64,
+    /// Language for the agent's user-facing prose. Defaults to English for
+    /// payloads that predate this field.
+    #[serde(default)]
+    pub language: Language,
 }
 
 /// Response of `POST /api/runs`: the id of the started run, used to subscribe
@@ -353,6 +389,9 @@ pub struct StartRunResponse {
 pub struct RefineQuestionsRequest {
     pub root: String,
     pub goal: String,
+    /// Language the clarifying questions come back in. Defaults to English.
+    #[serde(default)]
+    pub language: Language,
 }
 
 /// Response of `POST /api/refine/questions`: the rewritten goal, at most
@@ -372,6 +411,10 @@ pub struct RefineFinalizeRequest {
     pub root: String,
     pub goal: String,
     pub answers: Vec<(String, String)>,
+    /// Language the finalized goal and any prose come back in. Defaults to
+    /// English.
+    #[serde(default)]
+    pub language: Language,
 }
 
 /// Response of `POST /api/refine/finalize`: the final goal and the cost
@@ -593,6 +636,7 @@ mod tests {
             goal: "add a health check".to_string(),
             verify: Some("make verify".to_string()),
             refine_cost: 0.05,
+            language: Language::Indonesian,
         };
         let json = serde_json::to_string(&request).expect("StartRunRequest must serialize");
         let back: StartRunRequest =
@@ -603,6 +647,17 @@ mod tests {
         assert_eq!(back.goal, "add a health check");
         assert_eq!(back.verify.as_deref(), Some("make verify"));
         assert_eq!(back.refine_cost, 0.05);
+        assert_eq!(back.language, Language::Indonesian);
+    }
+
+    #[test]
+    fn a_start_run_request_without_language_defaults_to_english() {
+        // Payloads that predate the `language` field must still deserialize.
+        let json = r#"{"workspace":{"name":"greentic","repos":[]},
+            "goal":"g","verify":null,"refine_cost":0.0}"#;
+        let back: StartRunRequest =
+            serde_json::from_str(json).expect("older payloads must still deserialize");
+        assert_eq!(back.language, Language::English);
     }
 
     #[test]
@@ -621,6 +676,7 @@ mod tests {
         let request = RefineQuestionsRequest {
             root: "/tmp/greentic".to_string(),
             goal: "add a health check".to_string(),
+            language: Language::English,
         };
         let json = serde_json::to_string(&request).expect("RefineQuestionsRequest must serialize");
         let back: RefineQuestionsRequest =
@@ -648,6 +704,7 @@ mod tests {
             root: "/tmp/greentic".to_string(),
             goal: "add a health check".to_string(),
             answers: vec![("Which port?".to_string(), "8080".to_string())],
+            language: Language::English,
         };
         let json = serde_json::to_string(&request).expect("RefineFinalizeRequest must serialize");
         let back: RefineFinalizeRequest =

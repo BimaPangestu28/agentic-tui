@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use shared::App;
+use shared::{App, Language};
 
 /// One repository a run targeted, in the order the run listed it. Rebuilds the
 /// `orchestrator::RepoRun` map, the ordered repo names, and the repo paths a
@@ -31,6 +31,10 @@ pub struct PersistedRun {
     pub workspace: String,
     pub goal: String,
     pub default_verify: String,
+    /// Language for the agent's user-facing prose. `#[serde(default)]` so runs
+    /// persisted before this field existed load as English.
+    #[serde(default)]
+    pub language: Language,
     pub plan_cwd: PathBuf,
     pub repos: Vec<PersistedRepo>,
     /// This run's own copy of `.agentic-plan.json`, so resume never depends on
@@ -120,6 +124,7 @@ mod tests {
             workspace: "greentic".to_string(),
             goal: "add a health check".to_string(),
             default_verify: "make verify".to_string(),
+            language: Language::English,
             plan_cwd: PathBuf::from("/tmp/greentic"),
             repos: vec![PersistedRepo {
                 name: "greentic".to_string(),

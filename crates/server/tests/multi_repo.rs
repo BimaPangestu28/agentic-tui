@@ -100,6 +100,7 @@ async fn a_two_repo_plan_merges_each_epic_into_its_own_integration_branch() {
         goal: "spread work".to_string(),
         default_verify: "true".to_string(),
         initial_cost: 0.0,
+        language: shared::Language::English,
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();

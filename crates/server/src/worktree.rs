@@ -159,6 +159,31 @@ pub async fn current_branch(repo: &Path) -> anyhow::Result<Option<String>> {
     }
 }
 
+/// List the repo's local branch names (alphabetical, as `for-each-ref` emits
+/// them) together with the branch currently checked out in its main working
+/// tree (`None` if HEAD is detached). Powers the new-run form's per-repo base
+/// and integration branch pickers. A path that is not a git repo is an error.
+pub async fn list_branches(repo: &Path) -> anyhow::Result<(Vec<String>, Option<String>)> {
+    let output = run_git(
+        repo,
+        &["for-each-ref", "--format=%(refname:short)", "refs/heads"],
+    )
+    .await?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "could not list branches: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let branches = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .map(|line| line.trim().to_string())
+        .filter(|line| !line.is_empty())
+        .collect();
+    let current = current_branch(repo).await?;
+    Ok((branches, current))
+}
+
 /// Confirm a git ref resolves in the repo, so an invalid base fails the run
 /// before any session starts.
 pub async fn verify_ref(repo: &Path, reference: &str) -> anyhow::Result<()> {
@@ -373,6 +398,33 @@ mod tests {
         assert!(verify_ref(&tmp, "no-such-branch").await.is_err());
 
         let _ = tokio::fs::remove_dir_all(&tmp).await;
+    }
+
+    #[tokio::test]
+    async fn list_branches_reports_local_heads_and_the_current_branch() {
+        let tmp = std::env::temp_dir().join(format!("wt-listbr-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        tokio::fs::create_dir_all(&tmp).await.unwrap();
+        init_repo(&tmp).await;
+        git(&tmp, &["branch", "develop"]).await;
+        git(&tmp, &["branch", "release/2.1"]).await;
+
+        let (branches, current) = list_branches(&tmp).await.unwrap();
+        assert!(branches.contains(&"main".to_string()));
+        assert!(branches.contains(&"develop".to_string()));
+        assert!(branches.contains(&"release/2.1".to_string()));
+        assert_eq!(current.as_deref(), Some("main"));
+
+        // A directory outside any git repo is an error, not an empty list.
+        // (A subdir of `tmp` would resolve to `tmp`'s repo, since git searches
+        // upward, so the non-repo dir must live elsewhere.)
+        let not_repo = std::env::temp_dir().join(format!("wt-listbr-none-{}", std::process::id()));
+        let _ = tokio::fs::remove_dir_all(&not_repo).await;
+        tokio::fs::create_dir_all(&not_repo).await.unwrap();
+        assert!(list_branches(&not_repo).await.is_err());
+
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        let _ = tokio::fs::remove_dir_all(&not_repo).await;
     }
 
     #[tokio::test]

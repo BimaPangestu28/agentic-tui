@@ -87,6 +87,7 @@ async fn run_resume_skips_seeded_epics_and_runs_the_rest() {
         goal: "resume".to_string(),
         default_verify: "true".to_string(),
         initial_cost: 0.0,
+        language: shared::Language::English,
     };
 
     let (tx, mut rx) = mpsc::unbounded_channel::<StageEvent>();

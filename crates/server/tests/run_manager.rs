@@ -122,6 +122,7 @@ async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
         goal: "do nothing".to_string(),
         verify: Some("true".to_string()),
         refine_cost: 0.0,
+        language: shared::Language::English,
     };
     let run_a = run::start(request_a)
         .await
@@ -133,6 +134,7 @@ async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
         goal: "do something else".to_string(),
         verify: Some("true".to_string()),
         refine_cost: 0.0,
+        language: shared::Language::English,
     };
     let err = run::start(request_a_again)
         .await
@@ -145,6 +147,7 @@ async fn registry_is_busy_per_workspace_and_keeps_aborted_runs_listed() {
         goal: "do nothing".to_string(),
         verify: Some("true".to_string()),
         refine_cost: 0.0,
+        language: shared::Language::English,
     };
     let run_b = run::start(request_b)
         .await
@@ -211,6 +214,7 @@ async fn a_run_streams_snapshots_to_done_with_the_expected_cost() {
         goal: "do nothing".to_string(),
         verify: Some("true".to_string()),
         refine_cost: 0.0,
+        language: shared::Language::English,
     };
 
     let run_id = run::start(request)
@@ -256,6 +260,7 @@ async fn start_rejects_an_invalid_base_ref() {
         goal: "irrelevant".to_string(),
         verify: None,
         refine_cost: 0.0,
+        language: shared::Language::English,
     };
 
     let err = run::start(request)
@@ -282,6 +287,7 @@ async fn start_rejects_a_checked_out_integration_target() {
         goal: "irrelevant".to_string(),
         verify: None,
         refine_cost: 0.0,
+        language: shared::Language::English,
     };
 
     let err = run::start(request)

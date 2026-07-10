@@ -15,7 +15,7 @@ use crate::config;
 use crate::engine::{self, StageSpec};
 use crate::plan::{Epic, Plan};
 use crate::worktree::{self, MergeResult};
-use shared::StageEvent;
+use shared::{Language, StageEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EpicState {
@@ -167,6 +167,9 @@ pub struct RunConfig {
     pub goal: String,
     pub default_verify: String,
     pub initial_cost: f64,
+    /// Language for the agent's user-facing prose, threaded into every epic
+    /// session prompt.
+    pub language: Language,
 }
 
 /// The ref an epic's worktree branches from: its repo's integration branch
@@ -199,12 +202,14 @@ async fn run_verify(worktree_path: &std::path::Path, verify_cmd: &str) -> bool {
 /// Run one epic: create worktree, run the session, then verify. On failure,
 /// retry once. Accumulates session cost into `spent`. Returns Ok(Some(worktree))
 /// if it passed (ready to merge), Ok(None) if it failed after retry.
+#[allow(clippy::too_many_arguments)]
 async fn run_epic(
     epic: &Epic,
     rc: &RepoRun,
     base_ref: &str,
     verify_cmd: &str,
     goal: &str,
+    language: Language,
     spent: &Arc<Mutex<f64>>,
     tx: &UnboundedSender<StageEvent>,
 ) -> anyhow::Result<Option<worktree::EpicWorktree>> {
@@ -214,7 +219,7 @@ async fn run_epic(
         // ref; an epic with a same-repo dependency branches from the
         // integration branch, which already holds its merged deps.
         let wt = worktree::create(&rc.path, &epic.id, base_ref).await?;
-        let prompt = crate::config::epic_prompt(goal, epic, verify_cmd);
+        let prompt = crate::config::epic_prompt(goal, epic, verify_cmd, language);
         let spec = StageSpec {
             tag: &epic.id,
             cwd: &wt.path,
@@ -367,7 +372,18 @@ async fn drive(
                     .verify
                     .clone()
                     .unwrap_or_else(|| config.default_verify.clone());
-                match run_epic(&epic, rc, &base, &verify, &config.goal, &spent, &tx).await {
+                match run_epic(
+                    &epic,
+                    rc,
+                    &base,
+                    &verify,
+                    &config.goal,
+                    config.language,
+                    &spent,
+                    &tx,
+                )
+                .await
+                {
                     Ok(Some(wt)) => {
                         let merge_lock = merge_locks[&epic.repo].clone();
                         let merged = {
@@ -455,12 +471,14 @@ async fn drive(
 /// Unlike `run`, this touches a single epic with no scheduler and no merge
 /// lock, since nothing else is running. It does not emit `Done`; the caller
 /// detects completion when the event channel closes.
+#[allow(clippy::too_many_arguments)]
 pub async fn retry_epic(
     plan: &Plan,
     epic_id: &str,
     repos: &HashMap<String, RepoRun>,
     goal: &str,
     default_verify: &str,
+    language: Language,
     initial_cost: f64,
     tx: UnboundedSender<StageEvent>,
 ) -> anyhow::Result<()> {
@@ -495,7 +513,7 @@ pub async fn retry_epic(
         repo: epic.repo.clone(),
     });
 
-    match run_epic(epic, rc, &base, &verify, goal, &spent, &tx).await {
+    match run_epic(epic, rc, &base, &verify, goal, language, &spent, &tx).await {
         Ok(Some(wt)) => {
             let merged =
                 worktree::merge_into(&rc.path, &wt.branch, &rc.integration_branch, &rc.base_ref)

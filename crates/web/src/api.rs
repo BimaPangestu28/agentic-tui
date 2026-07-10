@@ -6,9 +6,9 @@
 
 use gloo_net::http::Request;
 use shared::{
-    RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest, RefineQuestionsResponse,
-    RunSummary, SaveRequest, ScanRequest, ScanResponse, StartRunRequest, StartRunResponse,
-    WorkspaceDto,
+    Language, RefineFinalizeRequest, RefineFinalizeResponse, RefineQuestionsRequest,
+    RefineQuestionsResponse, RepoBranchesResponse, RunSummary, SaveRequest, ScanRequest,
+    ScanResponse, StartRunRequest, StartRunResponse, WorkspaceDto,
 };
 
 /// Reads the response body as `T` when the status is a success code, or
@@ -34,6 +34,33 @@ pub async fn list_workspaces() -> Result<Vec<WorkspaceDto>, String> {
         .await
         .map_err(|err| format!("failed to fetch workspaces: {err}"))?;
     into_result(response).await
+}
+
+/// `GET /api/repo/branches?path=<repo>` -> the repo's local branch names and
+/// the branch currently checked out, for the new-run form's base and
+/// integration pickers.
+pub async fn list_branches(path: &str) -> Result<RepoBranchesResponse, String> {
+    let url = format!("/api/repo/branches?path={}", urlencode(path));
+    let response = Request::get(&url)
+        .send()
+        .await
+        .map_err(|err| format!("failed to fetch branches: {err}"))?;
+    into_result(response).await
+}
+
+/// Percent-encode a query-string value. Only the handful of characters that
+/// actually break a `path=` query are escaped; a repo path is otherwise safe.
+fn urlencode(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for byte in value.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
 }
 
 /// `POST /api/workspaces/scan` -> repos found under `root`.
@@ -84,10 +111,15 @@ pub async fn start_run(request: StartRunRequest) -> Result<StartRunResponse, Str
 
 /// `POST /api/refine/questions` -> the pass-1 refined goal, at most a
 /// handful of clarifying questions, and the cost incurred.
-pub async fn refine_questions(root: &str, goal: &str) -> Result<RefineQuestionsResponse, String> {
+pub async fn refine_questions(
+    root: &str,
+    goal: &str,
+    language: Language,
+) -> Result<RefineQuestionsResponse, String> {
     let body = RefineQuestionsRequest {
         root: root.to_string(),
         goal: goal.to_string(),
+        language,
     };
     let response = Request::post("/api/refine/questions")
         .json(&body)
@@ -159,11 +191,13 @@ pub async fn refine_finalize(
     root: &str,
     goal: &str,
     answers: Vec<(String, String)>,
+    language: Language,
 ) -> Result<RefineFinalizeResponse, String> {
     let body = RefineFinalizeRequest {
         root: root.to_string(),
         goal: goal.to_string(),
         answers,
+        language,
     };
     let response = Request::post("/api/refine/finalize")
         .json(&body)
