@@ -128,6 +128,21 @@ pub async fn retry_epic(run_id: &str, epic_id: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// `POST /api/runs/{id}/resume` -> re-run every unfinished epic of a failed or
+/// interrupted run. Takes no body.
+pub async fn resume_run(id: &str) -> Result<(), String> {
+    let response = Request::post(&format!("/api/runs/{id}/resume"))
+        .send()
+        .await
+        .map_err(|err| format!("failed to reach the resume endpoint: {err}"))?;
+    if !response.ok() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(format!("resume failed with status {status}: {body}"));
+    }
+    Ok(())
+}
+
 /// `GET /api/runs` -> every run started this session (active and finished),
 /// used by the app-bar runs-switcher and the dashboard.
 pub async fn list_runs() -> Result<Vec<RunSummary>, String> {
