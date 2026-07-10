@@ -122,6 +122,11 @@ struct PersistCtx {
     default_verify: String,
     plan_cwd: PathBuf,
     repos: Vec<run_store::PersistedRepo>,
+    // The run's own plan, when known at ctx-build time. `Some` pins persistence
+    // to that exact plan regardless of what the shared `.agentic-plan.json`
+    // holds later (see `resume`, which seeds this from the run's saved plan).
+    // `None` falls back to reading the shared file at persist time.
+    plan_json: Option<String>,
 }
 
 /// Build a `PersistCtx` from a run's resolved config. `repo_names` fixes the
@@ -153,6 +158,13 @@ fn build_persist_ctx(
         default_verify: default_verify.to_string(),
         plan_cwd: plan_cwd.to_path_buf(),
         repos: persisted_repos,
+        // `None` means "read the shared `.agentic-plan.json` at persist time" —
+        // correct for a fresh start/retry run, whose shared file still holds
+        // its own plan while it is the active run in the workspace, and which
+        // has no plan yet at ctx-build time. `resume` overrides this with the
+        // run's own saved plan before spawning, since by then the shared file
+        // may belong to a later run in the same workspace.
+        plan_json: None,
     }
 }
 
@@ -181,9 +193,14 @@ fn persist_to(dir: &Path, ctx: &PersistCtx, app: &App) {
         return;
     }
     // The run's own plan lives at plan_cwd/.agentic-plan.json for the whole
-    // active run (the workspace-busy guard blocks a concurrent overwrite).
-    let plan_json =
-        std::fs::read_to_string(ctx.plan_cwd.join(".agentic-plan.json")).unwrap_or_default();
+    // active run (the workspace-busy guard blocks a concurrent overwrite) —
+    // unless `ctx.plan_json` already pins the run's own plan (set by `resume`,
+    // whose shared file may have been overwritten by a later run since).
+    let plan_json = match &ctx.plan_json {
+        Some(plan_json) => plan_json.clone(),
+        None => std::fs::read_to_string(ctx.plan_cwd.join(".agentic-plan.json"))
+            .unwrap_or_default(),
+    };
     let run = run_store::PersistedRun {
         id: ctx.id.clone(),
         workspace: ctx.workspace.clone(),
@@ -675,7 +692,7 @@ pub async fn resume(run_id: &str) -> Result<(), ResumeError> {
     };
 
     handle.completed.store(false, Ordering::SeqCst);
-    let persist_ctx = build_persist_ctx(
+    let mut persist_ctx = build_persist_ctx(
         &handle.id,
         &handle.workspace,
         &handle.goal,
@@ -684,6 +701,10 @@ pub async fn resume(run_id: &str) -> Result<(), ResumeError> {
         &handle.repo_names,
         &handle.repos,
     );
+    // Pin persistence to the plan that actually drives this resume (the run's
+    // own saved plan), not whatever the shared `.agentic-plan.json` holds now
+    // — a later run in the same workspace may have overwritten it since.
+    persist_ctx.plan_json = Some(saved.plan_json.clone());
     let task = spawn_resume(
         handle.app.clone(),
         handle.tx.clone(),
@@ -940,6 +961,7 @@ mod tests {
             default_verify: "make verify".to_string(),
             plan_cwd: plan_cwd.clone(),
             repos: vec![],
+            plan_json: None,
         };
         let runs = dir.join("runs");
 
@@ -955,6 +977,48 @@ mod tests {
         assert_eq!(loaded.len(), 1);
         assert_eq!(loaded[0].id, "7");
         assert_eq!(loaded[0].plan_json, r#"{"epics":[]}"#);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Guards the resume-persist defect: once `PersistCtx.plan_json` pins the
+    /// run's own plan (as `resume` does), persisting must write that plan even
+    /// when the shared `.agentic-plan.json` now holds a different, later run's
+    /// plan (e.g. run 2 re-planned in the same workspace after run 1 failed).
+    #[test]
+    fn persist_prefers_ctx_plan_over_a_since_overwritten_shared_file() {
+        let dir = std::env::temp_dir().join(format!("persist-resume-plan-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let plan_cwd = dir.join("cwd");
+        std::fs::create_dir_all(&plan_cwd).unwrap();
+
+        let plan_1 = r#"{"epics":[{"id":"a","title":"A","repo":"r","depends_on":[]}]}"#;
+        let plan_2 = r#"{"epics":[{"id":"z","title":"Z","repo":"r","depends_on":[]}]}"#;
+        // Simulate a later run having overwritten the shared plan file since
+        // this (resumed) run's own plan was saved.
+        std::fs::write(plan_cwd.join(".agentic-plan.json"), plan_2).unwrap();
+
+        let ctx = PersistCtx {
+            id: "1".to_string(),
+            workspace: "greentic".to_string(),
+            goal: "g".to_string(),
+            default_verify: "make verify".to_string(),
+            plan_cwd: plan_cwd.clone(),
+            repos: vec![],
+            plan_json: Some(plan_1.to_string()),
+        };
+        let runs = dir.join("runs");
+
+        let mut app = App::new("g".to_string(), "greentic".to_string());
+        app.phase = Phase::Implementing;
+        persist_to(&runs, &ctx, &app);
+
+        let loaded = run_store::load_all(&runs);
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(
+            loaded[0].plan_json, plan_1,
+            "the ctx's own plan must win over the shared file"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
